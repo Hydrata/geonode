@@ -149,6 +149,10 @@ class GeoNodeClientLibraryTag(template.Node):
             t = context.template.engine.get_template(
                 hookset.map_download_template(
                     context=context))
+        elif self.tag_name == 'get_project_setup_map':
+            t = context.template.engine.get_template(
+                hookset.project_setup_map_template(
+                    context=context))
 
         if t:
             return t.render(context)
@@ -177,3 +181,4 @@ register.tag('get_map_edit', do_get_client_library_template)
 register.tag('get_map_update', do_get_client_library_template)
 register.tag('get_map_embed', do_get_client_library_template)
 register.tag('get_map_download', do_get_client_library_template)
+register.tag('get_project_setup_map', do_get_client_library_template)
