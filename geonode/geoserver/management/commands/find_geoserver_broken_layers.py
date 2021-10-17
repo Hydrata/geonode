@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -24,7 +23,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 from geonode.geoserver.helpers import gs_catalog
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 
 
 def is_gs_resource_valid(layer):
@@ -64,37 +63,31 @@ class Command(BaseCommand):
 
     def handle(self, **options):
         if options['layername']:
-            layers = Layer.objects.filter(name__icontains=options['layername'])
+            layers = Dataset.objects.filter(name__icontains=options['layername'])
         else:
-            layers = Layer.objects.all()
+            layers = Dataset.objects.all()
         if options['owner']:
             layers = layers.filter(owner=get_user_model().objects.filter(username=options['owner']))
 
         layers_count = layers.count()
         count = 0
 
-        layer_errors = []
+        dataset_errors = []
         for layer in layers:
             count += 1
             try:
-                print("Checking layer {}/{}: {} owned by {}".format(
-                    count,
-                    layers_count,
-                    layer.alternate,
-                    layer.owner.username
-                ))
+                print(
+                    f"Checking layer {count}/{layers_count}: {layer.alternate} owned by {layer.owner.username}"
+                )
                 if not is_gs_resource_valid(layer):
-                    print("Layer {} is broken!".format(layer.alternate))
-                    layer_errors.append(layer)
+                    print(f"Dataset {layer.alternate} is broken!")
+                    dataset_errors.append(layer)
                     if options['remove']:
                         print("Removing this layer...")
                         layer.delete()
             except Exception:
                 print("Unexpected error:", sys.exc_info()[0])
 
-        print("\n***** Layers with errors: {} in a total of {} *****".format(
-            len(layer_errors),
-            layers_count
-        ))
-        for layer_error in layer_errors:
-            print("{} by {}".format(layer_error.alternate, layer_error.owner.username))
+        print(f"\n***** Layers with errors: {len(dataset_errors)} in a total of {layers_count} *****")
+        for dataset_error in dataset_errors:
+            print(f"{dataset_error.alternate} by {dataset_error.owner.username}")

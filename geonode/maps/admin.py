@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -23,7 +22,7 @@ from django.contrib import admin
 
 from modeltranslation.admin import TabbedTranslationAdmin
 
-from geonode.maps.models import Map, MapLayer, MapSnapshot
+from geonode.maps.models import Map, MapLayer
 from geonode.base.admin import ResourceBaseAdminForm
 from geonode.base.admin import metadata_batch_edit
 
@@ -51,6 +50,15 @@ class MapAdmin(TabbedTranslationAdmin):
     form = MapAdminForm
     actions = [metadata_batch_edit]
 
+    def delete_queryset(self, request, queryset):
+        """
+        We need to invoke the 'ResourceBase.delete' method even when deleting
+        through the admin batch action
+        """
+        for obj in queryset:
+            from geonode.resource.manager import resource_manager
+            resource_manager.delete(obj.uuid, instance=obj)
+
 
 class MapLayerAdmin(admin.ModelAdmin):
     list_display = ('id', 'map', 'name')
@@ -59,10 +67,5 @@ class MapLayerAdmin(admin.ModelAdmin):
     form = forms.modelform_factory(MapLayer, fields='__all__')
 
 
-class MapSnapshotAdmin(admin.ModelAdmin):
-    list_display = ('map', 'user', 'created_dttm', )
-
-
 admin.site.register(Map, MapAdmin)
 admin.site.register(MapLayer, MapLayerAdmin)
-admin.site.register(MapSnapshot, MapSnapshotAdmin)

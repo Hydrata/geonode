@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -19,21 +18,23 @@
 #########################################################################
 
 from django import template
+from django.db.models import Q
+from django.conf import settings
+from django.db.models import Count
+from django.utils.translation import ugettext
+from django.contrib.auth import get_user_model
+from django.utils.translation import ugettext_lazy as _
+from django.contrib.contenttypes.models import ContentType
 
 from pinax.ratings.models import Rating
-from django.db.models import Q
-from django.utils.translation import ugettext
-from django.contrib.contenttypes.models import ContentType
-from django.contrib.auth import get_user_model
-from django.db.models import Count
-from django.conf import settings
-
 from guardian.shortcuts import get_objects_for_user
 
-from geonode.layers.models import Layer
 from geonode.maps.models import Map
+from geonode.layers.models import Dataset
+from geonode.base.models import ResourceBase
 from geonode.documents.models import Document
 from geonode.groups.models import GroupProfile
+from geonode.base.bbox_utils import filter_bbox
 from geonode.base.models import (
     HierarchicalKeyword, Menu, MenuItem
 )
@@ -43,11 +44,11 @@ from collections import OrderedDict
 register = template.Library()
 
 FACETS = {
-    'raster': 'Raster Layer',
-    'vector': 'Vector Layer',
-    'vector_time': 'Vector Temporal Serie',
-    'remote': 'Remote Layer',
-    'wms': 'WMS Cascade Layer'
+    'raster': _('Raster Dataset'),
+    'vector': _('Vector Dataset'),
+    'vector_time': _('Vector Temporal Serie'),
+    'remote': _('Remote Dataset'),
+    'wms': _('WMS Cascade Dataset')
 }
 
 
@@ -69,6 +70,8 @@ def num_ratings(obj):
 def facets(context):
     request = context['request']
     title_filter = request.GET.get('title__icontains', '')
+    abstract_filter = request.GET.get('abstract__icontains', '')
+    purpose_filter = request.GET.get('purpose__icontains', '')
     extent_filter = request.GET.get('extent', None)
     keywords_filter = request.GET.getlist('keywords__slug__in', None)
     category_filter = request.GET.getlist('category__identifier__in', None)
@@ -78,7 +81,7 @@ def facets(context):
     date_lte_filter = request.GET.get('date__lte', None)
     date_range_filter = request.GET.get('date__range', None)
 
-    facet_type = context['facet_type'] if 'facet_type' in context else 'all'
+    facet_type = context.get('facet_type', 'all')
 
     if not settings.SKIP_PERMS_FILTER:
         authorized = []
@@ -88,7 +91,55 @@ def facets(context):
         except Exception:
             pass
 
-    if facet_type == 'documents':
+    if facet_type == 'geoapps':
+        facets = {}
+
+        from django.apps import apps
+        for label, app in apps.app_configs.items():
+            if hasattr(app, 'type') and app.type == 'GEONODE_APP':
+                if hasattr(app, 'default_model'):
+                    geoapps = get_visible_resources(
+                        apps.get_model(label, app.default_model).objects.all(),
+                        request.user if request else None,
+                        admin_approval_required=settings.ADMIN_MODERATE_UPLOADS,
+                        unpublished_not_visible=settings.RESOURCE_PUBLISHING,
+                        private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES)
+
+                    if category_filter:
+                        geoapps = geoapps.filter(category__identifier__in=category_filter)
+                    if regions_filter:
+                        geoapps = geoapps.filter(regions__name__in=regions_filter)
+                    if owner_filter:
+                        geoapps = geoapps.filter(owner__username__in=owner_filter)
+                    if date_gte_filter:
+                        geoapps = geoapps.filter(date__gte=date_gte_filter)
+                    if date_lte_filter:
+                        geoapps = geoapps.filter(date__lte=date_lte_filter)
+                    if date_range_filter:
+                        geoapps = geoapps.filter(date__range=date_range_filter.split(','))
+
+                    if extent_filter:
+                        geoapps = filter_bbox(geoapps, extent_filter)
+
+                    if keywords_filter:
+                        treeqs = HierarchicalKeyword.objects.none()
+                        for keyword in keywords_filter:
+                            try:
+                                kws = HierarchicalKeyword.objects.filter(name__iexact=keyword)
+                                for kw in kws:
+                                    treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
+                            except Exception:
+                                # Ignore keywords not actually used?
+                                pass
+
+                        geoapps = geoapps.filter(Q(keywords__in=treeqs))
+
+                    if not settings.SKIP_PERMS_FILTER:
+                        geoapps = geoapps.filter(id__in=authorized)
+
+                    facets[app.default_model] = geoapps.count()
+        return facets
+    elif facet_type == 'documents':
         documents = Document.objects.filter(title__icontains=title_filter)
         if category_filter:
             documents = documents.filter(category__identifier__in=category_filter)
@@ -126,12 +177,16 @@ def facets(context):
         if not settings.SKIP_PERMS_FILTER:
             documents = documents.filter(id__in=authorized)
 
-        counts = documents.values('doc_type').annotate(count=Count('doc_type'))
-        facets = dict([(count['doc_type'], count['count']) for count in counts])
+        counts = documents.values('subtype').annotate(count=Count('subtype'))
+        facets = {count['subtype']: count['count'] for count in counts}
 
         return facets
     else:
-        layers = Layer.objects.filter(title__icontains=title_filter)
+        layers = Dataset.objects.filter(
+            Q(title__icontains=title_filter) |
+            Q(abstract__icontains=abstract_filter) |
+            Q(purpose__icontains=purpose_filter)
+        )
         if category_filter:
             layers = layers.filter(category__identifier__in=category_filter)
         if regions_filter:
@@ -153,22 +208,7 @@ def facets(context):
             private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES)
 
         if extent_filter:
-            from geonode.utils import bbox_to_projection
-            bbox = extent_filter.split(',')
-            bbox = list(map(str, bbox))
-
-            intersects = (Q(bbox_x0__gt=bbox[0]) & Q(bbox_x1__lt=bbox[2]) &
-                          Q(bbox_y0__gt=bbox[1]) & Q(bbox_y1__lt=bbox[3]))
-
-            for proj in Layer.objects.order_by('srid').values('srid').distinct():
-                if proj['srid'] != 'EPSG:4326':
-                    proj_bbox = bbox_to_projection(bbox + ['4326', ],
-                                                   target_srid=int(proj['srid'][5:]))
-                    if proj_bbox[-1] != 4326:
-                        intersects = intersects | (Q(bbox_x0__gt=proj_bbox[0]) & Q(bbox_x1__lt=proj_bbox[2]) & Q(
-                            bbox_y0__gt=proj_bbox[1]) & Q(bbox_y1__lt=proj_bbox[3]))
-
-            layers = layers.filter(intersects)
+            layers = filter_bbox(layers, extent_filter)
 
         if keywords_filter:
             treeqs = HierarchicalKeyword.objects.none()
@@ -186,33 +226,33 @@ def facets(context):
         if not settings.SKIP_PERMS_FILTER:
             layers = layers.filter(id__in=authorized)
 
-        counts = layers.values('storeType').annotate(count=Count('storeType'))
+        counts = layers.values('subtype').annotate(count=Count('subtype'))
 
         counts_array = []
         try:
             for count in counts:
-                counts_array.append((count['storeType'], count['count']))
+                counts_array.append((count['subtype'], count['count']))
         except Exception:
             pass
 
         count_dict = dict(counts_array)
 
-        vector_time_series = layers.exclude(has_time=False).filter(storeType='dataStore'). \
-            values('storeType').annotate(count=Count('storeType'))
+        vector_time_series = layers.exclude(has_time=False).filter(subtype='vector'). \
+            values('subtype').annotate(count=Count('subtype'))
 
         if vector_time_series:
             count_dict['vectorTimeSeries'] = vector_time_series[0]['count']
 
         facets = {
-            'raster': count_dict.get('coverageStore', 0),
-            'vector': count_dict.get('dataStore', 0),
+            'raster': count_dict.get('raster', 0),
+            'vector': count_dict.get('vector', 0),
             'vector_time': count_dict.get('vectorTimeSeries', 0),
-            'remote': count_dict.get('remoteStore', 0),
+            'remote': count_dict.get('remote', 0),
             'wms': count_dict.get('wmsStore', 0),
         }
 
-        # Break early if only_layers is set.
-        if facet_type == 'layers':
+        # Break early if only_datasets is set.
+        if facet_type == 'datasets':
             return facets
 
         maps = Map.objects.filter(title__icontains=title_filter)
@@ -251,14 +291,7 @@ def facets(context):
             private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES)
 
         if extent_filter:
-            bbox = extent_filter.split(
-                ',')  # TODO: Why is this different when done through haystack?
-            bbox = map(str, bbox)  # 2.6 compat - float to decimal conversion
-            intersects = ~(Q(bbox_x0__gt=bbox[2]) | Q(bbox_x1__lt=bbox[0]) |
-                           Q(bbox_y0__gt=bbox[3]) | Q(bbox_y1__lt=bbox[1]))
-
-            maps = maps.filter(intersects)
-            documents = documents.filter(intersects)
+            documents = filter_bbox(documents, extent_filter)
 
         if keywords_filter:
             treeqs = HierarchicalKeyword.objects.none()
@@ -288,7 +321,7 @@ def facets(context):
             facets['group'] = GroupProfile.objects.exclude(
                 access="private").count()
 
-            facets['layer'] = facets['raster'] + facets['vector'] + facets['remote'] + facets['wms']
+            facets['dataset'] = facets['raster'] + facets['vector'] + facets['remote'] + facets['wms']
 
     return facets
 
@@ -310,10 +343,10 @@ def get_current_path(context):
 @register.simple_tag(takes_context=True)
 def get_context_resourcetype(context):
     c_path = get_current_path(context)
-    resource_types = ['layers', 'maps', 'documents', 'search', 'people',
+    resource_types = ['datasets', 'maps', 'geoapps', 'documents', 'search', 'people',
                       'groups/categories', 'groups']
     for resource_type in resource_types:
-        if "/{0}/".format(resource_type) in c_path:
+        if f"/{resource_type}/" in c_path:
             return resource_type
     return 'error'
 
@@ -349,12 +382,44 @@ def render_nav_menu(placeholder_name):
     return {'menus': OrderedDict(menus.items())}
 
 
+@register.inclusion_tag(filename='base/iso_categories.html')
+def get_visibile_resources(user):
+    categories = get_objects_for_user(user, 'view_resourcebase', klass=ResourceBase, any_perm=False)\
+        .filter(category__isnull=False).values('category__gn_description',
+                                               'category__fa_class', 'category__description', 'category__identifier')\
+        .annotate(count=Count('category'))
+
+    return {
+        'iso_formats': categories
+    }
+
+
 @register.simple_tag
 def display_edit_request_button(resource, user, perms):
     def _has_owner_his_permissions():
-        return (set(resource.BASE_PERMISSIONS.get('owner') + resource.BASE_PERMISSIONS.get('write')) - set(
-            perms)) == set()
+        _owner_set = set(resource.BASE_PERMISSIONS.get('owner') +
+                         resource.BASE_PERMISSIONS.get('read') +
+                         resource.BASE_PERMISSIONS.get('write') +
+                         resource.BASE_PERMISSIONS.get('download')) - \
+            set(perms)
+        return _owner_set == set() or \
+            _owner_set == {'change_resourcebase_permissions', 'publish_resourcebase'}
 
-    if not _has_owner_his_permissions() and resource.owner.pk == user.pk:
+    if not _has_owner_his_permissions() and \
+            (user.is_superuser or resource.owner.pk == user.pk):
         return True
     return False
+
+
+@register.simple_tag
+def display_change_perms_button(resource, user, perms):
+    try:
+        from geonode.geoserver.helpers import ogc_server_settings
+    except Exception:
+        return False
+    if not getattr(ogc_server_settings, 'GEONODE_SECURITY_ENABLED', False):
+        return False
+    elif user.is_superuser or 'change_resourcebase_permissions' in set(perms):
+        return True
+    else:
+        return not getattr(settings, 'ADMIN_MODERATE_UPLOADS', False)

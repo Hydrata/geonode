@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -17,13 +16,18 @@
 # along with this profgram. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+import logging
+import faulthandler
 
-from django.test.testcases import SimpleTestCase, TestCase, LiveServerTestCase
+from django.test.testcases import (
+    TestCase,
+    SimpleTestCase,
+    LiveServerTestCase)
 
 try:
     from django.utils.decorators import classproperty
 except Exception:
-    class classproperty(object):
+    class classproperty:
 
         def __init__(self, method=None):
             self.fget = method
@@ -34,13 +38,6 @@ except Exception:
         def getter(self, method):
             self.fget = method
             return self
-
-from geonode import geoserver, qgis_server  # noqa
-from geonode.utils import check_ogc_backend
-from geonode.base.populate_test_data import create_models, remove_models
-
-import faulthandler
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -55,21 +52,11 @@ class GeoNodeBaseTestSupport(TestCase):
     obj_ids = []
     integration = False
 
-    if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-        fixtures = [
-            'initial_data.json',
-            'group_test_data.json',
-            'default_oauth_apps.json'
-        ]
-    else:
-        fixtures = [
-            'initial_data.json',
-            'group_test_data.json'
-        ]
-
-    @classproperty
-    def get_type(cls):
-        return cls.type
+    fixtures = [
+        'initial_data.json',
+        'group_test_data.json',
+        'default_oauth_apps.json'
+    ]
 
     @classproperty
     def get_obj_ids(cls):
@@ -79,21 +66,13 @@ class GeoNodeBaseTestSupport(TestCase):
     def get_integration(cls):
         return cls.integration
 
-    def setUp(self):
-        super(GeoNodeBaseTestSupport, self).setUp()
-        faulthandler.enable()
-        logging.debug(" Test setUp. Creating models.")
-        self.get_obj_ids = create_models(type=self.get_type, integration=self.get_integration)
+    @classproperty
+    def get_type(cls):
+        return cls.type
 
-    def tearDown(self):
-        logging.debug(" Test tearDown. Destroying models / Cleaning up Server.")
-        remove_models(self.get_obj_ids, type=self.get_type, integration=self.get_integration)
-        from django.conf import settings
-        if settings.OGC_SERVER['default'].get(
-                "GEOFENCE_SECURITY_ENABLED", False):
-            from geonode.security.utils import purge_geofence_all
-            purge_geofence_all()
-        super(GeoNodeBaseTestSupport, self).tearDown()
+    def setUp(self):
+        super().setUp()
+        faulthandler.enable()
 
 
 class GeoNodeLiveTestSupport(GeoNodeBaseTestSupport,
@@ -101,18 +80,3 @@ class GeoNodeLiveTestSupport(GeoNodeBaseTestSupport,
 
     integration = True
     port = 8000
-
-    def setUp(self):
-        super(GeoNodeLiveTestSupport, self).setUp()
-        logging.debug(" Test setUp. Creating models.")
-        self.get_obj_ids = create_models(type=self.get_type, integration=self.get_integration)
-
-    def tearDown(self):
-        super(GeoNodeLiveTestSupport, self).tearDown()
-        logging.debug(" Test tearDown. Destroying models / Cleaning up Server.")
-        remove_models(self.get_obj_ids, type=self.get_type, integration=self.get_integration)
-        from django.conf import settings
-        if settings.OGC_SERVER['default'].get(
-                "GEOFENCE_SECURITY_ENABLED", False):
-            from geonode.security.utils import purge_geofence_all
-            purge_geofence_all()

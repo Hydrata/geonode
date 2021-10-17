@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -17,39 +16,39 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-from geonode.base.forms import ResourceBaseForm
 import os
 import tempfile
 import zipfile
 
 from django import forms
+from django.conf import settings
 
-from geonode import geoserver, qgis_server
+from geonode import geoserver
 from geonode.utils import check_ogc_backend
 
 import json
 from geonode.utils import unzip_file
-from geonode.layers.models import Layer, Attribute
+from geonode.base.forms import ResourceBaseForm
+from geonode.layers.models import Dataset, Attribute
 
 
 class JSONField(forms.CharField):
 
     def clean(self, text):
-        text = super(JSONField, self).clean(text)
+        text = super().clean(text)
         try:
             return json.loads(text)
         except ValueError:
             raise forms.ValidationError("this field must be valid JSON")
 
 
-class LayerForm(ResourceBaseForm):
+class DatasetForm(ResourceBaseForm):
     class Meta(ResourceBaseForm.Meta):
-        model = Layer
+        model = Dataset
         exclude = ResourceBaseForm.Meta.exclude + (
             'workspace',
             'store',
-            'storeType',
+            'subtype',
             'alternate',
             'default_style',
             'styles',
@@ -60,7 +59,7 @@ class LayerForm(ResourceBaseForm):
         # }
 
     def __init__(self, *args, **kwargs):
-        super(LayerForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         for field in self.fields:
             help_text = self.fields[field].help_text
             self.fields[field].help_text = None
@@ -85,8 +84,6 @@ class LayerUploadForm(forms.Form):
     xml_file = forms.FileField(required=False)
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         sld_file = forms.FileField(required=False)
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        qml_file = forms.FileField(required=False)
 
     charset = forms.CharField(required=False)
     metadata_uploaded_preserve = forms.BooleanField(required=False)
@@ -102,13 +99,11 @@ class LayerUploadForm(forms.Form):
     # Adding style file based on the backend
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         spatial_files.append('sld_file')
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        spatial_files.append('qml_file')
 
     spatial_files = tuple(spatial_files)
 
     def clean(self):
-        cleaned = super(LayerUploadForm, self).clean()
+        cleaned = super().clean()
         dbf_file = shx_file = prj_file = xml_file = sld_file = None
         base_name = base_ext = None
         if zipfile.is_zipfile(cleaned["base_file"]):
@@ -150,18 +145,15 @@ class LayerUploadForm(forms.Form):
                     sld_file = cleaned["sld_file"].name
 
         if not cleaned["metadata_upload_form"] and not cleaned["style_upload_form"] and base_ext.lower() not in (
-                ".shp", ".tif", ".tiff", ".geotif", ".geotiff", ".asc", ".sld", ".kml", ".kmz"):
+                ".shp", ".tif", ".tiff", ".geotif", ".geotiff", ".asc", ".sld", ".kml", ".kmz", ".csv"):
             raise forms.ValidationError(
-                "Only Shapefiles, GeoTiffs, and ASCIIs are supported. You "
-                "uploaded a %s file" % base_ext)
+                f"Only Shapefiles, GeoTiffs, and ASCIIs are supported. You uploaded a {base_ext} file")
         elif cleaned["metadata_upload_form"] and base_ext.lower() not in (".xml"):
             raise forms.ValidationError(
-                "Only XML files are supported. You uploaded a %s file" %
-                base_ext)
+                f"Only XML files are supported. You uploaded a {base_ext} file")
         elif cleaned["style_upload_form"] and base_ext.lower() not in (".sld"):
             raise forms.ValidationError(
-                "Only SLD files are supported. You uploaded a %s file" %
-                base_ext)
+                f"Only SLD files are supported. You uploaded a {base_ext} file")
 
         if base_ext.lower() == ".shp":
             if dbf_file is None or shx_file is None:
@@ -186,19 +178,19 @@ class LayerUploadForm(forms.Form):
                         # force rename of file so that file.shp.xml doesn't
                         # overwrite as file.shp
                         if cleaned.get("xml_file"):
-                            cleaned["xml_file"].name = '%s.xml' % base_name
+                            cleaned["xml_file"].name = f'{base_name}.xml'
             if sld_file is not None:
                 if os.path.splitext(sld_file)[0] != base_name:
                     if sld_file.find('.shp') != -1:
                         # force rename of file so that file.shp.xml doesn't
                         # overwrite as file.shp
                         if cleaned.get("sld_file"):
-                            cleaned["sld_file"].name = '%s.sld' % base_name
+                            cleaned["sld_file"].name = f'{base_name}.sld'
         return cleaned
 
     def write_files(self):
         absolute_base_file = None
-        tempdir = tempfile.mkdtemp()
+        tempdir = tempfile.mkdtemp(dir=settings.STATIC_ROOT)
         if zipfile.is_zipfile(self.cleaned_data['base_file']):
             absolute_base_file = unzip_file(self.cleaned_data['base_file'],
                                             '.shp', tempdir=tempdir)
@@ -218,12 +210,10 @@ class LayerUploadForm(forms.Form):
 class NewLayerUploadForm(LayerUploadForm):
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         sld_file = forms.FileField(required=False)
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        qml_file = forms.FileField(required=False)
     xml_file = forms.FileField(required=False)
 
     abstract = forms.CharField(required=False)
-    layer_title = forms.CharField(required=False)
+    dataset_title = forms.CharField(required=False)
     permissions = JSONField()
     charset = forms.CharField(required=False)
     metadata_uploaded_preserve = forms.BooleanField(required=False)
@@ -238,8 +228,6 @@ class NewLayerUploadForm(LayerUploadForm):
     # Adding style file based on the backend
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         spatial_files.append('sld_file')
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        spatial_files.append('qml_file')
 
     spatial_files = tuple(spatial_files)
 
@@ -256,7 +244,7 @@ class LayerDescriptionForm(forms.Form):
 class LayerAttributeForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
-        super(LayerAttributeForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.fields['attribute'].widget.attrs['readonly'] = True
         self.fields['display_order'].widget.attrs['size'] = 3
 

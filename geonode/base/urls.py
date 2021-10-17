@@ -1,4 +1,3 @@
-
 #########################################################################
 #
 # Copyright (C) 2019 OSGeo
@@ -17,13 +16,16 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-
-from django.conf.urls import url
+from django.conf.urls import url, include
 
 from .views import (
-    ResourceBaseAutocomplete, RegionAutocomplete,
-    HierarchicalKeywordAutocomplete, ThesaurusKeywordLabelAutocomplete, OwnerRightsRequestView)
+    resource_clone,
+    RegionAutocomplete,
+    ThesaurusAvailable,
+    OwnerRightsRequestView,
+    ResourceBaseAutocomplete,
+    HierarchicalKeywordAutocomplete,
+    ThesaurusKeywordLabelAutocomplete)
 
 
 urlpatterns = [
@@ -46,6 +48,11 @@ urlpatterns = [
     ),
 
     url(
+        r'^thesaurus_available',
+        ThesaurusAvailable.as_view(),
+        name='thesaurus_available',
+    ),
+    url(
         r'^thesaurus_autocomplete/$',
         ThesaurusKeywordLabelAutocomplete.as_view(),
         name='thesaurus_autocomplete',
@@ -55,4 +62,10 @@ urlpatterns = [
         OwnerRightsRequestView.as_view(),
         name='owner_rights_request',
     ),
+    url(
+        r'^resource_clone/?$',
+        resource_clone,
+        name='resource_clone',
+    ),
+    url(r'^', include('geonode.base.api.urls')),
 ]

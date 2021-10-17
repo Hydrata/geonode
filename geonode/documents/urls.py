@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-#
+#########################################################################
 #
 # Copyright (C) 2016 OSGeo
 #
@@ -16,23 +15,22 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
-#
-
-from django.conf.urls import url
+#########################################################################
+from django.conf.urls import url, include
 from django.contrib.auth.decorators import login_required
 from django.views.generic import TemplateView
 
 from .views import DocumentUploadView, DocumentUpdateView
 from .views import DocumentAutocomplete
 from . import views
-from geonode.monitoring import register_url_event
+from geonode.base import register_url_event
 
 js_info_dict = {
     'packages': ('geonode.documents',),
 }
 
 documents_list = register_url_event()(TemplateView.as_view(
-        template_name='documents/document_list.html'))
+    template_name='documents/document_list.html'))
 
 urlpatterns = [  # 'geonode.documents.views',
     url(r'^$',
@@ -44,6 +42,10 @@ urlpatterns = [  # 'geonode.documents.views',
         views.document_detail, name='document_detail'),
     url(r'^(?P<docid>\d+)/download/?$',
         views.document_download, name='document_download'),
+    url(r'^(?P<docid>\d+)/link/?$',
+        views.document_link, name='document_link'),
+    url(r'^(?P<docid>\d+)/embed/?$',
+        views.document_embed, name='document_embed'),
     url(r'^(?P<docid>\d+)/replace$', login_required(DocumentUpdateView.as_view()),
         name="document_replace"),
     url(r'^(?P<docid>\d+)/remove$',
@@ -57,11 +59,12 @@ urlpatterns = [  # 'geonode.documents.views',
     url(r'^(?P<docid>\d+)/metadata$',
         views.document_metadata, name='document_metadata'),
     url(
-        r'^metadata/batch/(?P<ids>[^/]*)/$',
+        r'^metadata/batch/$',
         views.document_batch_metadata,
         name='document_batch_metadata'),
     url(r'^(?P<docid>\d+)/metadata_advanced$', views.document_metadata_advanced,
         name='document_metadata_advanced'),
     url(r'^autocomplete/$',
         DocumentAutocomplete.as_view(), name='autocomplete_document'),
+    url(r'^', include('geonode.documents.api.urls')),
 ]

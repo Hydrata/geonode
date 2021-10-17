@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -28,7 +27,7 @@ from tastypie.http import HttpUnauthorized
 
 from django.conf import settings
 
-from geonode import geoserver, qgis_server
+from geonode import geoserver
 from geonode.utils import check_ogc_backend
 
 
@@ -132,10 +131,7 @@ class GeoNodeStyleAuthorization(GeoNodeAuthorization):
     def filter_by_resource_ids(self, object_list, permitted_ids):
         """Filter Style queryset by permitted resource ids."""
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            return object_list.filter(layer_styles__id__in=permitted_ids)
-        elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-            return object_list.filter(
-                layer_styles__layer__id__in=permitted_ids)
+            return object_list.filter(dataset_styles__id__in=permitted_ids)
 
     def read_list(self, object_list, bundle):
         permitted_ids = get_objects_for_user(
@@ -147,7 +143,7 @@ class GeoNodeStyleAuthorization(GeoNodeAuthorization):
     def delete_detail(self, object_list, bundle):
         permitted_ids = get_objects_for_user(
             bundle.request.user,
-            'layer.change_layer_style').values('id')
+            'layer.change_dataset_style').values('id')
 
         resource_obj = bundle.obj.get_self_resource()
         return resource_obj in permitted_ids
@@ -171,22 +167,24 @@ class ApiLockdownAuthorization(DjangoAuthorization):
 class GroupAuthorization(ApiLockdownAuthorization):
 
     def read_list(self, object_list, bundle):
-        groups = super(GroupAuthorization, self).read_list(object_list, bundle)
+        groups = super().read_list(object_list, bundle)
         user = bundle.request.user
-        if groups and (not user.is_authenticated or user.is_anonymous):
-            return groups.exclude(groupprofile__access='private')
-        elif groups and not user.is_superuser:
-            return groups.filter(Q(groupprofile__in=user.group_list_all()) | ~Q(groupprofile__access='private'))
+        if groups:
+            if not user.is_authenticated or user.is_anonymous:
+                return groups.exclude(groupprofile__access='private')
+            elif not user.is_superuser:
+                return groups.filter(Q(groupprofile__in=user.group_list_all()) | ~Q(groupprofile__access='private'))
         return groups
 
 
 class GroupProfileAuthorization(ApiLockdownAuthorization):
 
     def read_list(self, object_list, bundle):
-        groups = super(GroupProfileAuthorization, self).read_list(object_list, bundle)
+        groups = super().read_list(object_list, bundle)
         user = bundle.request.user
-        if groups and (not user.is_authenticated or user.is_anonymous):
-            return groups.exclude(access='private')
-        elif groups and not user.is_superuser:
-            return groups.filter(Q(pk__in=user.group_list_all()) | ~Q(access='private'))
+        if groups:
+            if not user.is_authenticated or user.is_anonymous:
+                return groups.exclude(access='private')
+            elif not user.is_superuser:
+                return groups.filter(Q(pk__in=user.group_list_all()) | ~Q(access='private'))
         return groups

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -19,7 +18,6 @@
 #########################################################################
 
 import os
-import six
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "lib"))
@@ -47,15 +45,15 @@ def confirm(prompt=None, resp=False):
         prompt = 'Confirm'
 
     if resp:
-        prompt = '%s [%s]|%s: ' % (prompt, 'y', 'n')
+        prompt = f'{prompt} [y]|n: '
     else:
-        prompt = '%s [%s]|%s: ' % (prompt, 'n', 'y')
+        prompt = f'{prompt} [n]|y: '
 
     while True:
-        ans = six.moves.input(prompt)
+        ans = input(prompt)
         if not ans:
             return resp
-        if ans not in ['y', 'Y', 'n', 'N']:
+        if ans not in {'y', 'Y', 'n', 'N'}:
             print('please enter y or n.')
             continue
         if ans == 'y' or ans == 'Y':

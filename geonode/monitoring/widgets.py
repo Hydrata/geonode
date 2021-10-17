@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2020 OSGeo
@@ -18,7 +17,6 @@
 #
 #########################################################################
 
-import six
 
 from django.forms.widgets import Textarea
 from django.core.exceptions import ValidationError
@@ -35,7 +33,7 @@ class MultiEmailWidget(Textarea):
         """ Prepare value before effectively render widget """
         if value in MULTI_EMAIL_FIELD_EMPTY_VALUES:
             return ""
-        elif isinstance(value, six.string_types):
+        elif isinstance(value, str):
             return value
         elif isinstance(value, list):
             return "\n".join(value)
@@ -43,4 +41,4 @@ class MultiEmailWidget(Textarea):
 
     def render(self, name, value, attrs=None, renderer=None):
         value = self.prep_value(value)
-        return super(MultiEmailWidget, self).render(name, value, attrs, renderer)
+        return super().render(name, value, attrs, renderer)

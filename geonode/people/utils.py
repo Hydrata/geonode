@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -20,7 +19,6 @@
 
 from django.contrib.auth import get_user_model
 
-from six import string_types
 
 from geonode import GeoNodeException
 
@@ -44,7 +42,7 @@ def get_valid_user(user=None):
     """
     if user is None:
         theuser = get_default_user()
-    elif isinstance(user, string_types):
+    elif isinstance(user, str):
         theuser = get_user_model().objects.get(username=user)
     elif user == user.get_anonymous():
         raise GeoNodeException('The user uploading files must not '
@@ -64,27 +62,27 @@ def format_address(street=None, zipcode=None, city=None, area=None, country=None
         address = ""
         if city and area:
             if street:
-                address += street + ", "
-            address += city + ", " + area
+                address += f"{street}, "
+            address += f"{city}, {area}"
             if zipcode:
-                address += " " + zipcode
+                address += f" {zipcode}"
         elif (not city) and area:
             if street:
-                address += street + ", "
+                address += f"{street}, "
             address += area
             if zipcode:
-                address += " " + zipcode
+                address += f" {zipcode}"
         elif city and (not area):
             if street:
-                address += street + ", "
+                address += f"{street}, "
             address += city
             if zipcode:
-                address += " " + zipcode
+                address += f" {zipcode}"
         else:
             if street:
-                address += ", " + street
+                address += f", {street}"
             if zipcode:
-                address += " " + zipcode
+                address += f" {zipcode}"
 
         if address:
             address += ", United States"

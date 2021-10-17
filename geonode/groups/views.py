@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,6 +17,8 @@
 #
 #########################################################################
 
+from django.views import View
+from geonode.base.views import user_and_group_permission
 import logging
 
 from actstream.models import Action
@@ -50,6 +51,14 @@ from . import models
 from .models import GroupMember
 
 logger = logging.getLogger(__name__)
+
+
+class SetGroupDatasetPermission(View):
+    def get(self, request):
+        return user_and_group_permission(request, 'groupprofile')
+
+    def post(self, request):
+        return user_and_group_permission(request, 'groupprofile')
 
 
 @view_decorator(superuser_only, subclass=True)
@@ -136,13 +145,16 @@ class GroupDetailView(ListView):
     def get(self, request, *args, **kwargs):
         self.group = get_object_or_404(
             models.GroupProfile, slug=kwargs.get('slug'))
-        return super(GroupDetailView, self).get(request, *args, **kwargs)
+        if self.group.access == 'private' and \
+                not self.group.user_is_member(request.user):
+            raise Http404
+        return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
-        context = super(GroupDetailView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context['object'] = self.group
         context['maps'] = self.group.resources(resource_type='map')
-        context['layers'] = self.group.resources(resource_type='layer')
+        context['datasets'] = self.group.resources(resource_type='dataset')
         context['documents'] = self.group.resources(resource_type='document')
         context['is_member'] = self.group.user_is_member(self.request.user)
         context['is_manager'] = self.group.user_is_role(
@@ -282,44 +294,44 @@ class GroupActivityView(ListView):
 
         self.group = group
 
-        return super(GroupActivityView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         def getKey(action):
             return action.timestamp
 
-        context = super(GroupActivityView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context['group'] = self.group
         members = ([(member.user.id) for member in self.group.member_queryset()])
         # Additional Filtered Lists Below
         action_list = []
         actions = Action.objects.filter(
             public=True,
-            action_object_content_type__model='layer')
-        context['action_list_layers'] = [
-                                            action
-                                            for action in actions
-                                            if action.action_object and action.action_object.group == self.group.group][
-                                        :15]
-        action_list.extend(context['action_list_layers'])
+            action_object_content_type__model='dataset')
+        context['action_list_datasets'] = [
+            action
+            for action in actions
+            if action.action_object and action.action_object.group == self.group.group][
+            :15]
+        action_list.extend(context['action_list_datasets'])
         actions = Action.objects.filter(
             public=True,
             action_object_content_type__model='map')[:15]
         context['action_list_maps'] = [
-                                          action
-                                          for action in actions
-                                          if action.action_object and action.action_object.group == self.group.group][
-                                      :15]
+            action
+            for action in actions
+            if action.action_object and action.action_object.group == self.group.group][
+            :15]
         action_list.extend(context['action_list_maps'])
         actions = Action.objects.filter(
             public=True,
             action_object_content_type__model='document')[:15]
         context['action_list_documents'] = [
-                                               action
-                                               for action in actions
-                                               if
-                                               action.action_object and action.action_object.group == self.group.group][
-                                           :15]
+            action
+            for action in actions
+            if
+            action.action_object and action.action_object.group == self.group.group][
+            :15]
         action_list.extend(context['action_list_documents'])
         context['action_list_comments'] = Action.objects.filter(
             public=True,

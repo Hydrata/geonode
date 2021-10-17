@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -23,15 +22,15 @@ This file demonstrates writing tests using the unittest module. These will pass
 when you run "manage.py test".
 
 """
-from geonode.tests.base import GeoNodeBaseTestSupport
-
 import os
 import io
 import json
-
 import gisdata
-from datetime import datetime
+
+from unittest.mock import patch
+
 from django.urls import reverse
+from django.conf import settings
 from django.contrib.auth.models import Group
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -39,25 +38,41 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 
 from guardian.shortcuts import get_perms, get_anonymous_user
 
-from .forms import DocumentCreateForm
+from geonode.maps.models import Map
+from geonode.layers.models import Dataset
+from geonode.compat import ensure_string
+from geonode.base.thumb_utils import get_thumbs
+from geonode.base.models import License, Region
+from geonode.documents import DocumentsAppConfig
+from geonode.storage.manager import storage_manager
+from geonode.resource.manager import resource_manager
+from geonode.documents.forms import DocumentFormMixin
+from geonode.tests.base import GeoNodeBaseTestSupport
+from geonode.tests.utils import NotificationsTestsHelper
+from geonode.documents.enumerations import DOCUMENT_TYPE_MAP
+from geonode.documents.models import Document, DocumentResourceLink
 
 from geonode.groups.models import (
     GroupProfile,
     GroupMember)
-from geonode.maps.models import Map
-from geonode.layers.models import Layer
-from geonode.compat import ensure_string
-from geonode.base.models import License, Region
-from geonode.documents import DocumentsAppConfig
-from geonode.documents.forms import DocumentFormMixin
-from geonode.tests.utils import NotificationsTestsHelper
-from geonode.base.populate_test_data import create_models
-from geonode.documents.models import Document, DocumentResourceLink
+from geonode.base.populate_test_data import (
+    all_public,
+    create_models,
+    remove_models)
+
+from .forms import DocumentCreateForm
 
 
 class DocumentsTest(GeoNodeBaseTestSupport):
 
     type = 'document'
+
+    fixtures = [
+        'initial_data.json',
+        'group_test_data.json',
+        'default_oauth_apps.json'
+    ]
+
     perm_spec = {
         "users": {
             "admin": [
@@ -66,41 +81,66 @@ class DocumentsTest(GeoNodeBaseTestSupport):
                 "view_resourcebase"]},
         "groups": {}}
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        create_models(type=cls.get_type, integration=cls.get_integration)
+        all_public()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        remove_models(cls.get_obj_ids, type=cls.get_type, integration=cls.get_integration)
+
     def setUp(self):
-        super(DocumentsTest, self).setUp()
+        super().setUp()
         create_models('map')
         self.imgfile = io.BytesIO(
             b'GIF87a\x01\x00\x01\x00\x80\x01\x00\x00\x00\x00ccc,\x00'
             b'\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;')
         self.anonymous_user = get_anonymous_user()
 
-    def test_create_document_with_no_rel(self):
-        """Tests the creation of a document with no relations"""
+    def test_document_mimetypes_rendering(self):
+        ARCHIVETYPES = [_e for _e, _t in DOCUMENT_TYPE_MAP.items() if _t == 'archive']
+        AUDIOTYPES = [_e for _e, _t in DOCUMENT_TYPE_MAP.items() if _t == 'audio']
+        IMGTYPES = [_e for _e, _t in DOCUMENT_TYPE_MAP.items() if _t == 'image']
+        VIDEOTYPES = [_e for _e, _t in DOCUMENT_TYPE_MAP.items() if _t == 'video']
+        self.assertIsNotNone(ARCHIVETYPES)
+        self.assertIsNotNone(AUDIOTYPES)
+        self.assertIsNotNone(IMGTYPES)
+        self.assertIsNotNone(VIDEOTYPES)
 
-        f = SimpleUploadedFile(
-            'test_img_file.gif',
-            self.imgfile.read(),
-            'image/gif')
+        # Make sure we won't have template rendering issues
+        self.assertTrue('dwg' in ARCHIVETYPES)
+        self.assertTrue('dxf' in ARCHIVETYPES)
+        self.assertTrue('tif' in ARCHIVETYPES)
+        self.assertTrue('tiff' in ARCHIVETYPES)
+        self.assertTrue('pbm' in ARCHIVETYPES)
+
+    @patch("geonode.documents.tasks.create_document_thumbnail")
+    def test_create_document_with_no_rel(self, thumb):
+        """Tests the creation of a document with no relations"""
+        thumb.return_value = True
+        f = [f"{settings.MEDIA_ROOT}/img.gif"]
 
         superuser = get_user_model().objects.get(pk=2)
         c = Document.objects.create(
-            doc_file=f,
+            files=f,
             owner=superuser,
             title='theimg')
         c.set_default_permissions()
         self.assertEqual(Document.objects.get(pk=c.id).title, 'theimg')
 
-    def test_create_document_with_rel(self):
+    @patch("geonode.documents.tasks.create_document_thumbnail")
+    def test_create_document_with_rel(self, thumb):
         """Tests the creation of a document with no a map related"""
-        f = SimpleUploadedFile(
-            'test_img_file.gif',
-            self.imgfile.read(),
-            'image/gif')
+        thumb.return_value = True
+        f = [f"{settings.MEDIA_ROOT}/img.gif"]
 
         superuser = get_user_model().objects.get(pk=2)
 
         c = Document.objects.create(
-            doc_file=f,
+            files=f,
             owner=superuser,
             title='theimg')
 
@@ -118,10 +158,14 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         """Tests creating an external document instead of a file."""
 
         superuser = get_user_model().objects.get(pk=2)
-        c = Document.objects.create(doc_url="http://geonode.org/map.pdf",
-                                    owner=superuser,
-                                    title="GeoNode Map",
-                                    )
+        c = resource_manager.create(
+            None,
+            resource_type=Document,
+            defaults=dict(
+                doc_url="http://geonode.org/map.pdf",
+                owner=superuser,
+                title="GeoNode Map",
+            ))
         doc = Document.objects.get(pk=c.id)
         self.assertEqual(doc.title, "GeoNode Map")
         self.assertEqual(doc.extension, "pdf")
@@ -217,7 +261,17 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         response = self.client.get(reverse('document_detail', args=(str(d.id),)))
         self.assertEqual(response.status_code, 200)
 
-    def test_document_metadata_details(self):
+    def test_document_embed(self):
+        """/documents/1 -> Test accessing the embed view of a document"""
+        d = Document.objects.all().first()
+        d.set_default_permissions()
+
+        response = self.client.get(reverse('document_embed', args=(str(d.id),)))
+        self.assertEqual(response.status_code, 200)
+
+    @patch("geonode.documents.tasks.create_document_thumbnail")
+    def test_document_metadata_details(self, thumb):
+        thumb.return_value = True
         d = Document.objects.all().first()
         d.set_default_permissions()
 
@@ -273,7 +327,7 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         """Verify that the set_document_permissions view is behaving as expected
         """
         # Get a document to work with
-        document = Document.objects.all()[0]
+        document = Document.objects.first()
 
         # Set the Permissions
         document.set_permissions(self.perm_spec)
@@ -287,7 +341,7 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         # Test that previous permissions for users other than ones specified in
         # the perm_spec (and the document owner) were removed
         current_perms = document.get_all_level_info()
-        self.assertEqual(len(current_perms['users']), 2)
+        self.assertEqual(len(current_perms['users']), 1)
 
         # Test that the User permissions specified in the perm_spec were
         # applied properly
@@ -295,22 +349,23 @@ class DocumentsTest(GeoNodeBaseTestSupport):
             user = get_user_model().objects.get(username=username)
             self.assertTrue(user.has_perm(perm, document.get_self_resource()))
 
-    def test_ajax_document_permissions(self):
+    @patch("geonode.documents.tasks.create_document_thumbnail")
+    def test_ajax_document_permissions(self, create_thumb):
         """Verify that the ajax_document_permissions view is behaving as expected
         """
-
+        create_thumb.return_value = True
         # Setup some document names to work with
-        f = SimpleUploadedFile(
-            'test_img_file.gif',
-            self.imgfile.read(),
-            'image/gif')
+        f = [f"{settings.MEDIA_ROOT}/img.gif"]
 
         superuser = get_user_model().objects.get(pk=2)
-        document = Document.objects.create(
-            doc_file=f,
-            owner=superuser,
-            title='theimg')
-        document.set_default_permissions()
+        document = resource_manager.create(
+            None,
+            resource_type=Document,
+            defaults=dict(
+                files=f,
+                owner=superuser,
+                title='theimg',
+                is_approved=True))
         document_id = document.id
         invalid_document_id = 20
 
@@ -320,14 +375,14 @@ class DocumentsTest(GeoNodeBaseTestSupport):
                 'resource_permissions', args=(
                     invalid_document_id,)), data=json.dumps(
                 self.perm_spec), content_type="application/json")
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 401)
 
         # Test that GET returns permissions
         response = self.client.get(reverse('resource_permissions', args=(document_id,)))
         assert('permissions' in ensure_string(response.content))
 
         # Test that a user is required to have
-        # documents.change_layer_permissions
+        # documents.change_dataset_permissions
 
         # First test un-authenticated
         response = self.client.post(
@@ -360,17 +415,17 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         Model = Document
         view = 'document_batch_metadata'
         resources = Model.objects.all()[:3]
-        ids = ','.join([str(element.pk) for element in resources])
+        ids = ','.join(str(element.pk) for element in resources)
         # test non-admin access
         self.client.login(username="bobby", password="bob")
-        response = self.client.get(reverse(view, args=(ids,)))
+        response = self.client.get(reverse(view))
         self.assertTrue(response.status_code in (401, 403))
         # test group change
         group = Group.objects.first()
         self.client.login(username='admin', password='admin')
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'group': group.pk},
+            reverse(view),
+            data={'group': group.pk, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
@@ -379,8 +434,8 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         # test owner change
         owner = get_user_model().objects.first()
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'owner': owner.pk},
+            reverse(view),
+            data={'owner': owner.pk, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
@@ -389,8 +444,8 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         # test license change
         license = License.objects.first()
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'license': license.pk},
+            reverse(view),
+            data={'license': license.pk, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
@@ -399,32 +454,19 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         # test regions change
         region = Region.objects.first()
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'region': region.pk},
+            reverse(view),
+            data={'region': region.pk, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
         for resource in resources:
             if resource.regions.all():
                 self.assertTrue(region in resource.regions.all())
-        # test date change
-        from django.utils import timezone
-        date = datetime.now(timezone.get_current_timezone())
-        response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'date': date},
-        )
-        self.assertEqual(response.status_code, 200)
-        resources = Model.objects.filter(id__in=[r.pk for r in resources])
-        for resource in resources:
-            today = date.today()
-            todoc = resource.date.today()
-            self.assertEqual((today.day, today.month, today.year), (todoc.day, todoc.month, todoc.year))
         # test language change
         language = 'eng'
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'language': language},
+            reverse(view),
+            data={'language': language, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
@@ -433,8 +475,8 @@ class DocumentsTest(GeoNodeBaseTestSupport):
         # test keywords change
         keywords = 'some,thing,new'
         response = self.client.post(
-            reverse(view, args=(ids,)),
-            data={'keywords': keywords},
+            reverse(view),
+            data={'keywords': keywords, 'ids': ids, 'regions': 1},
         )
         self.assertEqual(response.status_code, 302)
         resources = Model.objects.filter(id__in=[r.pk for r in resources])
@@ -446,13 +488,13 @@ class DocumentsTest(GeoNodeBaseTestSupport):
 class DocumentModerationTestCase(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(DocumentModerationTestCase, self).setUp()
+        super().setUp()
         self.user = 'admin'
         self.passwd = 'admin'
         create_models(type=b'document')
         create_models(type=b'map')
-        self.document_upload_url = "{}?no__redirect=true".format(
-            reverse('document_upload'))
+        self.project_root = os.path.abspath(os.path.dirname(__file__))
+        self.document_upload_url = f"{(reverse('document_upload'))}?no__redirect=true"
         self.u = get_user_model().objects.get(username=self.user)
         self.u.email = 'test@email.com'
         self.u.is_active = True
@@ -462,25 +504,42 @@ class DocumentModerationTestCase(GeoNodeBaseTestSupport):
         base_path = gisdata.GOOD_DATA
         return os.path.join(base_path, 'vector', 'readme.txt')
 
+    def test_document_upload_redirect(self):
+        with self.settings(ADMIN_MODERATE_UPLOADS=False):
+            self.client.login(username=self.user, password=self.passwd)
+            dname = 'document title'
+            with open(os.path.join(f"{self.project_root}", "tests/data/img.gif"), "rb") as f:
+                data = {
+                    'title': dname,
+                    'doc_file': f,
+                    'resource': '',
+                    'extension': 'gif',
+                    'permissions': '{}',
+                }
+                resp = self.client.post(self.document_upload_url, data=data)
+                self.assertEqual(resp.status_code, 200, resp.content)
+                content = json.loads(resp.content.decode('utf-8'))
+                self.assertTrue(content["success"])
+                self.assertIn("url", content)
+
     def test_moderated_upload(self):
         """
         Test if moderation flag works
         """
         with self.settings(ADMIN_MODERATE_UPLOADS=False):
             self.client.login(username=self.user, password=self.passwd)
-
             input_path = self._get_input_path()
-
-            with open(input_path, 'rb') as f:
-                data = {'title': 'document title',
-                        'doc_file': f,
-                        'resource': '',
-                        'extension': 'txt',
-                        'permissions': '{}',
-                        }
-                resp = self.client.post(self.document_upload_url, data=data)
-                self.assertEqual(resp.status_code, 200)
             dname = 'document title'
+            with open(os.path.join(f"{self.project_root}", "tests/data/img.gif"), "rb") as f:
+                data = {
+                    'title': dname,
+                    'doc_file': f,
+                    'resource': '',
+                    'extension': 'txt',
+                    'permissions': '{}',
+                }
+                resp = self.client.post(self.document_upload_url, data=data)
+                self.assertEqual(resp.status_code, 200, resp.content)
             _d = Document.objects.get(title=dname)
 
             self.assertTrue(_d.is_published)
@@ -488,40 +547,49 @@ class DocumentModerationTestCase(GeoNodeBaseTestSupport):
             _d.delete()
 
             from geonode.documents.utils import delete_orphaned_document_files
-            delete_orphaned_document_files()
+            if storage_manager.exists(os.path.join("documents", "document")):
+                _, document_files_before = storage_manager.listdir(os.path.join("documents", "document"))
+                deleted = delete_orphaned_document_files()
+                _, document_files_after = storage_manager.listdir(os.path.join("documents", "document"))
+                self.assertTrue(len(deleted) > 0)
+                self.assertEqual(set(deleted), set(document_files_before) - set(document_files_after))
 
             from geonode.base.utils import delete_orphaned_thumbs
-            delete_orphaned_thumbs()
+            thumb_files_before = get_thumbs()
+            deleted = delete_orphaned_thumbs()
+            thumb_files_after = get_thumbs()
+            if deleted:
+                self.assertTrue(
+                    len(deleted) > 0,
+                    f"before: {thumb_files_before} - deleted: {deleted} - after: {thumb_files_after}")
+                self.assertEqual(
+                    set(deleted), set(thumb_files_before) - set(thumb_files_after),
+                    f"deleted: {deleted} vs {set(thumb_files_before) - set(thumb_files_after)}")
 
-            from django.conf import settings
-            documents_path = os.path.join(settings.MEDIA_ROOT, 'documents')
-            fn = os.path.join(documents_path, os.path.basename(input_path))
-            self.assertFalse(os.path.isfile(fn))
+            fn = os.path.join(
+                os.path.join("documents", "document"), os.path.basename(input_path))
+            self.assertFalse(storage_manager.exists(fn))
 
-            thumbs_path = os.path.join(settings.MEDIA_ROOT, 'thumbs')
-            _cnt = 0
-            for filename in os.listdir(thumbs_path):
-                fn = os.path.join(thumbs_path, filename)
-                if uuid in filename:
-                    _cnt += 1
-            self.assertTrue(_cnt == 0)
+            files = [thumb for thumb in get_thumbs() if uuid in thumb]
+            if files and len(files):
+                self.assertEqual(len(files), 1)
 
         with self.settings(ADMIN_MODERATE_UPLOADS=True):
             self.client.login(username=self.user, password=self.passwd)
-
             norman = get_user_model().objects.get(username="norman")
             group = GroupProfile.objects.get(slug="bar")
             input_path = self._get_input_path()
+            dname = 'document title'
             with open(input_path, 'rb') as f:
-                data = {'title': 'document title',
-                        'doc_file': f,
-                        'resource': '',
-                        'extension': 'txt',
-                        'permissions': '{}',
-                        }
+                data = {
+                    'title': dname,
+                    'doc_file': f,
+                    'resource': '',
+                    'extension': 'txt',
+                    'permissions': '{}',
+                }
                 resp = self.client.post(self.document_upload_url, data=data)
                 self.assertEqual(resp.status_code, 200)
-            dname = 'document title'
             _d = Document.objects.get(title=dname)
             self.assertFalse(_d.is_approved)
             self.assertTrue(_d.is_published)
@@ -532,14 +600,12 @@ class DocumentModerationTestCase(GeoNodeBaseTestSupport):
             self.assertTrue(group.user_is_role(norman, "manager"))
 
             self.client.login(username="norman", password="norman")
-            resp = self.client.get(
-                reverse('document_detail', args=(_d.id,)))
+            resp = self.client.get(reverse('document_detail', args=(_d.id,)))
             # Forbidden
             self.assertEqual(resp.status_code, 403)
             _d.group = group.group
             _d.save()
-            resp = self.client.get(
-                reverse('document_detail', args=(_d.id,)))
+            resp = self.client.get(reverse('document_detail', args=(_d.id,)))
             # Allowed - edit permissions
             self.assertEqual(resp.status_code, 200)
             perms_list = get_perms(norman, _d.get_self_resource()) + get_perms(norman, _d)
@@ -555,7 +621,7 @@ class DocumentModerationTestCase(GeoNodeBaseTestSupport):
             group.leave(norman)
 
 
-class DocumentNotificationsTestCase(NotificationsTestsHelper):
+class DocumentsNotificationsTestCase(NotificationsTestsHelper):
 
     def setUp(self):
         self.user = 'admin'
@@ -565,26 +631,57 @@ class DocumentNotificationsTestCase(NotificationsTestsHelper):
         self.u = get_user_model().objects.get(username=self.user)
         self.u.email = 'test@email.com'
         self.u.is_active = True
+        self.u.is_superuser = True
         self.u.save()
         self.setup_notifications_for(DocumentsAppConfig.NOTIFICATIONS, self.u)
+        self.norman = get_user_model().objects.get(username='norman')
+        self.norman.email = 'norman@email.com'
+        self.norman.is_active = True
+        self.norman.save()
+        self.setup_notifications_for(DocumentsAppConfig.NOTIFICATIONS, self.norman)
 
-    def testDocumentNotifications(self):
-        with self.settings(PINAX_NOTIFICATIONS_QUEUE_ALL=True):
+    def testDocumentsNotifications(self):
+        with self.settings(
+                EMAIL_ENABLE=True,
+                NOTIFICATION_ENABLED=True,
+                NOTIFICATIONS_BACKEND="pinax.notifications.backends.email.EmailBackend",
+                PINAX_NOTIFICATIONS_QUEUE_ALL=False):
             self.clear_notifications_queue()
-            _d = Document.objects.create(title='test notifications', owner=self.u)
+            self.client.login(username=self.user, password=self.passwd)
+            _d = Document.objects.create(
+                title='test notifications',
+                owner=self.norman)
             self.assertTrue(self.check_notification_out('document_created', self.u))
+            # Ensure "resource.owner" won't be notified for having created its own document
+            self.assertFalse(self.check_notification_out('document_created', self.norman))
+
+            self.clear_notifications_queue()
             _d.title = 'test notifications 2'
             _d.save(notify=True)
             self.assertTrue(self.check_notification_out('document_updated', self.u))
 
+            self.clear_notifications_queue()
             from dialogos.models import Comment
             lct = ContentType.objects.get_for_model(_d)
-            comment = Comment(author=self.u, name=self.u.username,
-                              content_type=lct, object_id=_d.id,
-                              content_object=_d, comment='test comment')
+            comment = Comment(author=self.norman,
+                              name=self.norman.username,
+                              content_type=lct,
+                              object_id=_d.id,
+                              content_object=_d,
+                              comment='test comment')
             comment.save()
-
             self.assertTrue(self.check_notification_out('document_comment', self.u))
+
+            if "pinax.ratings" in settings.INSTALLED_APPS:
+                self.clear_notifications_queue()
+                from pinax.ratings.models import Rating
+                rating = Rating(user=self.norman,
+                                content_type=lct,
+                                object_id=_d.id,
+                                content_object=_d,
+                                rating=5)
+                rating.save()
+                self.assertTrue(self.check_notification_out('document_rated', self.u))
 
 
 class DocumentResourceLinkTestCase(GeoNodeBaseTestSupport):
@@ -592,7 +689,7 @@ class DocumentResourceLinkTestCase(GeoNodeBaseTestSupport):
     def setUp(self):
         create_models(b'document')
         create_models(b'map')
-        create_models(b'layer')
+        create_models(b'dataset')
 
         self.test_file = io.BytesIO(
             b'GIF87a\x01\x00\x01\x00\x80\x01\x00\x00\x00\x00ccc,\x00'
@@ -601,16 +698,11 @@ class DocumentResourceLinkTestCase(GeoNodeBaseTestSupport):
 
     def test_create_document_with_links(self):
         """Tests the creation of document links."""
-        f = SimpleUploadedFile(
-            'test_img_file.gif',
-            self.test_file.read(),
-            'image/gif'
-        )
-
+        f = [f"{settings.MEDIA_ROOT}/img.gif"]
         superuser = get_user_model().objects.get(pk=2)
 
         d = Document.objects.create(
-            doc_file=f,
+            files=f,
             owner=superuser,
             title='theimg'
         )
@@ -618,7 +710,7 @@ class DocumentResourceLinkTestCase(GeoNodeBaseTestSupport):
         self.assertEqual(Document.objects.get(pk=d.id).title, 'theimg')
 
         maps = list(Map.objects.all())
-        layers = list(Layer.objects.all())
+        layers = list(Dataset.objects.all())
         resources = maps + layers
 
         # create document links
@@ -665,3 +757,123 @@ class DocumentResourceLinkTestCase(GeoNodeBaseTestSupport):
                     content_type=ct.id,
                     object_id=resource.id
                 )
+
+
+class DocumentViewTestCase(GeoNodeBaseTestSupport):
+
+    fixtures = [
+        'initial_data.json',
+        'group_test_data.json',
+        'default_oauth_apps.json'
+    ]
+
+    def setUp(self):
+        self.not_admin = get_user_model().objects.create(username='r-lukaku', is_active=True)
+        self.not_admin.set_password('very-secret')
+        self.not_admin.save()
+        self.files = [f"{settings.MEDIA_ROOT}/img.gif"]
+        self.test_doc = resource_manager.create(
+            None,
+            resource_type=Document,
+            defaults=dict(
+                files=self.files,
+                owner=self.not_admin,
+                title='test',
+                is_approved=True))
+        self.perm_spec = {"users": {"AnonymousUser": []}}
+        self.doc_link_url = reverse('document_link', args=(self.test_doc.pk,))
+
+    def test_that_keyword_multiselect_is_disabled_for_non_admin_users(self):
+        """
+        Test that keyword multiselect widget is disabled when the user is not an admin
+        when FREETEXT_KEYWORDS_READONLY=True
+        """
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        with self.settings(FREETEXT_KEYWORDS_READONLY=True):
+            response = self.client.get(url)
+            self.assertFalse(self.not_admin.is_superuser)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.context['form']['keywords'].field.disabled)
+
+    def test_that_keyword_multiselect_is_not_disabled_for_admin_users(self):
+        """
+        Test that only admin users can create/edit keywords
+        """
+        admin = self.not_admin
+        admin.is_superuser = True
+        admin.save()
+        self.client.login(username=admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        response = self.client.get(url)
+        self.assertTrue(admin.is_superuser)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['form']['keywords'].field.disabled)
+
+    def test_that_non_admin_user_can_create_write_to_map_without_keyword(self):
+        """
+        Test that non admin users can write to maps without creating/editing keywords
+        when FREETEXT_KEYWORDS_READONLY=True
+        """
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        with self.settings(FREETEXT_KEYWORDS_READONLY=True):
+            response = self.client.post(url)
+            self.assertFalse(self.not_admin.is_superuser)
+            self.assertEqual(response.status_code, 200)
+
+    def test_that_non_admin_user_cannot_create_edit_keyword(self):
+        """
+        Test that non admin users cannot edit/create keywords when FREETEXT_KEYWORDS_READONLY=True
+        """
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        with self.settings(FREETEXT_KEYWORDS_READONLY=True):
+            response = self.client.post(url, data={'resource-keywords': 'wonderful-keyword'})
+            self.assertFalse(self.not_admin.is_superuser)
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.content, b'Unauthorized: Cannot edit/create Free-text Keywords')
+
+    def test_that_keyword_multiselect_is_enabled_for_non_admin_users_when_freetext_keywords_readonly_istrue(self):
+        """
+        Test that keyword multiselect widget is not disabled when the user is not an admin
+        and FREETEXT_KEYWORDS_READONLY=False
+        """
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        with self.settings(FREETEXT_KEYWORDS_READONLY=False):
+            response = self.client.get(url)
+            self.assertFalse(self.not_admin.is_superuser)
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.context['form']['keywords'].field.disabled)
+
+    def test_that_non_admin_user_can_create_edit_keyword_when_freetext_keywords_readonly_istrue(self):
+        """
+        Test that non admin users can edit/create keywords when FREETEXT_KEYWORDS_READONLY=False
+        """
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        url = reverse('document_metadata', args=(self.test_doc.pk,))
+        with self.settings(FREETEXT_KEYWORDS_READONLY=False):
+            response = self.client.post(url, data={'resource-keywords': 'wonderful-keyword'})
+            self.assertFalse(self.not_admin.is_superuser)
+            self.assertEqual(response.status_code, 200)
+
+    def test_document_link_with_permissions(self):
+        self.test_doc.set_permissions(self.perm_spec)
+        # Get link as Anonymous user
+        response = self.client.get(self.doc_link_url)
+        self.assertEqual(response.status_code, 401)
+        # Access resource with user logged-in
+        self.client.login(username=self.not_admin.username, password='very-secret')
+        response = self.client.get(self.doc_link_url)
+        self.assertEqual(response.status_code, 404)
+        # test document link with external url
+        doc = resource_manager.create(
+            None,
+            resource_type=Document,
+            defaults=dict(
+                doc_url="http://geonode.org/map.pdf",
+                owner=self.not_admin,
+                title="GeoNode Map Doc",
+            ))
+        self.assertEqual(doc.href, 'http://geonode.org/map.pdf')

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -19,7 +18,7 @@
 #########################################################################
 
 import os
-from defusedxml import lxml as dlxml
+from owslib.etree import etree as dlxml
 from django.conf import settings
 from owslib.iso import MD_Metadata
 from pycsw import server
@@ -51,16 +50,16 @@ CONFIGURATION = {
     },
     'repository': {
         'source': 'geonode.catalogue.backends.pycsw_plugin.GeoNodeRepository',
-        # 'filter': 'is_published = %s and dirty_state = %s ' % (true_value, false_value),
-        'filter': 'is_published = %s' % true_value,
+        'filter': 'uuid IS NOT NULL',
         'mappings': os.path.join(os.path.dirname(__file__), 'pycsw_local_mappings.py')
     }
 }
 
 
 class CatalogueBackend(GenericCatalogueBackend):
+
     def __init__(self, *args, **kwargs):
-        super(CatalogueBackend, self).__init__(*args, **kwargs)
+        GenericCatalogueBackend.__init__(CatalogueBackend, self, *args, **kwargs)
         self.catalogue.formats = ['Atom', 'DIF', 'Dublin Core', 'ebRIM', 'FGDC', 'ISO']
         self.catalogue.local = True
 

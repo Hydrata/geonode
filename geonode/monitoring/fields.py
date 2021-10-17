@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2020 OSGeo
@@ -18,7 +17,6 @@
 #
 #########################################################################
 
-import six
 
 from django.db import models
 
@@ -33,7 +31,7 @@ class MultiEmailField(models.Field):
         # while letting the caller override them.
         defaults = {'form_class': MultiEmailFormField}
         defaults.update(kwargs)
-        return super(MultiEmailField, self).formfield(**defaults)
+        return super().formfield(**defaults)
 
     def from_db_value(self, value, expression, connection, context):
         if value is None:
@@ -41,7 +39,7 @@ class MultiEmailField(models.Field):
         return value.splitlines()
 
     def get_db_prep_value(self, value, connection, prepared=False):
-        if isinstance(value, six.string_types):
+        if isinstance(value, str):
             return value
         elif isinstance(value, list):
             return "\n".join(value)

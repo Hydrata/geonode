@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -19,21 +18,21 @@
 #########################################################################
 
 from django import forms
-from django.utils.translation import ugettext as _
+from django.utils.translation import ugettext_lazy as _
 
 GEOMETRY_TYPES = (
-    ('Point', 'Points'),
-    ('LineString', 'Lines'),
-    ('Polygon', 'Polygons'),
+    ('Point', _('Points')),
+    ('LineString', _('Lines')),
+    ('Polygon', _('Polygons')),
 )
 
 
-class NewLayerForm(forms.Form):
+class NewDatasetForm(forms.Form):
     """
     A form to create an empty layer in PostGIS.
     """
-    name = forms.CharField(label=_('Layer name'), max_length=255)
-    title = forms.CharField(label=_('Layer title'), max_length=255)
+    name = forms.CharField(label=_('Dataset name'), max_length=255)
+    title = forms.CharField(label=_('Dataset title'), max_length=255)
     geometry_type = forms.ChoiceField(label=_('Geometry type'), choices=GEOMETRY_TYPES)
 
     permissions = forms.CharField(

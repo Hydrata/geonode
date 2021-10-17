@@ -78,7 +78,6 @@
 
         function successCallback(data) {
             //success code
-            debugger;
             if ($location.search().hasOwnProperty('keywords__slug__in')) {
                 data.data.objects = module.set_initial_filters_from_query(data.data.objects,
                     $location.search()['keywords__slug__in'], 'slug');
@@ -130,6 +129,7 @@
 
         function errorCallback(error) {
             //error code
+            console.log(error);
         };
     };
 
@@ -156,6 +156,7 @@
 
         function errorCallback(error) {
             //error code
+            console.log(error);
         };
     }
 
@@ -641,16 +642,36 @@
                 } else {
                     var query_key = $('#text_search_input').data('query-key') || 'title__icontains';
                 }
-                $scope.query[query_key] = $('#text_search_input').val();
+                if ($('#text_search_input').val()) {
+                    $scope.query[query_key] = $('#text_search_input').val();
+                } else {
+                    // Reset query context
+                    var limit = $scope.query['limit'];
+                    var offset = $scope.query['offset'];
+                    var order_by = $scope.query['order_by'];
+                    $scope.query = {};
+                    $scope.query['limit'] = limit;
+                    $scope.query['offset'] = offset;
+                    if (order_by) {
+                        $scope.query['order_by'] = order_by;
+                    }
+                }
             }
-            $scope.query['abstract__icontains'] = $('#text_search_input').val();
-            $scope.query['purpose__icontains'] = $('#text_search_input').val();
-            $scope.query['f_method'] = 'or';
+            if ($('#text_search_input').val() || $('#text_search_input').val()) {
+                $scope.query['abstract__icontains'] = $('#text_search_input').val();
+                $scope.query['purpose__icontains'] = $('#text_search_input').val();
+                $scope.query['f_method'] = 'or';
+            }
             query_api($scope.query);
         });
 
         $('#region_search_btn').click(function () {
-            $scope.query['regions__name__in'] = $('#region_search_input').val();
+            if ($('#region_search_input').val()){
+                $scope.query['regions__name__in'] = $('#region_search_input').val();
+            }
+            else {
+                delete $scope.query['regions__name__in']
+            }
             query_api($scope.query);
         });
 

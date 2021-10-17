@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -121,7 +120,7 @@ class _ValidFromToLastForm(forms.Form):
                 'Cannot use last and valid_from/valid_to at the same time')
 
     def clean(self):
-        super(_ValidFromToLastForm, self).clean()
+        super().clean()
         self._check_timestamps()
 
 
@@ -145,9 +144,9 @@ class CheckTypeForm(_ValidFromToLastForm):
         val = d[tname]
         if not val:
             return
-        tcheck = getattr(TypeChecks, '{}_type'.format(tname), None)
+        tcheck = getattr(TypeChecks, f'{tname}_type', None)
         if not tcheck:
-            raise forms.ValidationError("No type check for {}".format(tname))
+            raise forms.ValidationError(f"No type check for {tname}")
         try:
             return tcheck(val)
         except (Exception,) as err:
@@ -156,7 +155,6 @@ class CheckTypeForm(_ValidFromToLastForm):
 
 class MetricsFilters(CheckTypeForm):
     GROUP_BY_RESOURCE = 'resource'
-    GROUP_BY_CHOICES = ((GROUP_BY_RESOURCE, "By resource",),)
     GROUP_BY_RESOURCE_ON_LABEL = 'resource_on_label'
     GROUP_BY_RESOURCE_ON_USER = 'resource_on_user'
     GROUP_BY_COUNT_ON_RESOURCE = 'count_on_resource'
@@ -212,7 +210,7 @@ class MetricsFilters(CheckTypeForm):
                 "Cannot use service and service type at the same time")
 
     def clean(self):
-        super(MetricsFilters, self).clean()
+        super().clean()
         self._check_services()
 
 
@@ -523,7 +521,7 @@ class BeaconView(View):
             ex = exposes[service]()
         except KeyError:
             return json_response(
-                errors={'exposed': 'No service for {}'.format(service)}, status=404)
+                errors={'exposed': f'No service for {service}'}, status=404)
         out = {'data': ex.expose(),
                'timestamp': datetime.utcnow().replace(tzinfo=pytz.utc)}
         return json_response(out)
@@ -566,7 +564,7 @@ class MetricNotificationCheckForm(forms.ModelForm):
         try:
             return cls.objects.get(name=val)
         except cls.DoesNotExist:
-            raise forms.ValidationError("Invalid {}: {}".format(name, val))
+            raise forms.ValidationError(f"Invalid {name}: {val}")
 
     def clean_metric(self):
         return self._get_clean_model(Metric, 'metric')
@@ -588,11 +586,11 @@ class MetricNotificationCheckForm(forms.ModelForm):
             vtype, vname = val.split('=')
         except IndexError:
             raise forms.ValidationError(
-                "Invalid resource name: {}".format(val))
+                f"Invalid resource name: {val}")
         try:
             return MonitoredResource.objects.get(name=vname, type=vtype)
         except MonitoredResource.DoesNotExist:
-            raise forms.ValidationError("Invalid resource: {}".format(val))
+            raise forms.ValidationError(f"Invalid resource: {val}")
 
 
 class UserNotificationConfigView(View):
@@ -603,7 +601,6 @@ class UserNotificationConfigView(View):
 
     def get(self, request, *args, **kwargs):
         out = {'success': False, 'status': 'error', 'data': [], 'errors': {}}
-        status = 500
         fields = ('field_name',
                   'steps',
                   'current_value',
@@ -628,7 +625,6 @@ class UserNotificationConfigView(View):
 
     def post(self, request, *args, **kwargs):
         out = {'success': False, 'status': 'error', 'data': [], 'errors': {}}
-        status = 500
         if auth.get_user(request).is_authenticated:
             obj = self.get_object()
             try:
@@ -719,7 +715,7 @@ class StatusCheckView(View):
         d['problems'] = problems = []
         d['health_level'] = 'ok'
         _levels = ('fatal', 'error', 'warning',)
-        levels = set([])
+        levels = set()
 
         for nc, ncdata in checks:
             for ncd in ncdata:

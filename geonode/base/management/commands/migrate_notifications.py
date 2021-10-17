@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -43,7 +42,7 @@ class Command(BaseCommand):
         try:
             c.execute('select medium, send, notice_type_id, user_id from notification_noticesetting;')
         except ProgrammingError as err:
-            log.error("No table for notification app, exiting")
+            log.error(f"No table for notification app, exiting: {err}")
             # no source of data, bye!
             return
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,19 +17,25 @@
 #
 #########################################################################
 
+import warnings
 from django.conf import settings
 from geonode import get_version
 from geonode.catalogue import default_catalogue_backend
 from django.contrib.sites.models import Site
 
 from geonode.notifications_helper import has_notifications
-from geonode.base.models import Configuration
+from geonode.base.models import Configuration, Thesaurus
 
 
 def resource_urls(request):
     """Global values to pass to templates"""
     site = Site.objects.get_current()
-
+    thesaurus = Thesaurus.objects.filter(facet=True).all().order_by('order', 'id')
+    if hasattr(settings, 'THESAURUS'):
+        warnings.warn(
+            'Thesaurus settings is going to be'
+            'deprecated in the future versions, please move the settings to '
+            'the new configuration ', FutureWarning)
     defaults = dict(
         STATIC_URL=settings.STATIC_URL,
         CATALOGUE_BASE_URL=default_catalogue_backend()['URL'],
@@ -170,7 +175,7 @@ def resource_urls(request):
             False
         ),
         THESAURI_FILTERS=[t['name'] for t in [settings.THESAURUS, ] if
-                          t.get('filter')] if hasattr(settings, 'THESAURUS') else None,
+                          t.get('filter')] if hasattr(settings, 'THESAURUS') else [t.identifier for t in thesaurus],
         MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS=getattr(
             settings, 'MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS', False
         ),
@@ -181,7 +186,19 @@ def resource_urls(request):
         ),
         OGC_SERVER=getattr(settings, 'OGC_SERVER', None),
         DELAYED_SECURITY_SIGNALS=getattr(settings, 'DELAYED_SECURITY_SIGNALS', False),
-        READ_ONLY_MODE=getattr(Configuration.load(), 'read_only', False)
+        READ_ONLY_MODE=getattr(Configuration.load(), 'read_only', False),
+        # GeoNode Apps
+        GEONODE_APPS_ENABLE=getattr(settings, 'GEONODE_APPS_ENABLE', False),
+        GEONODE_APPS_NAME=getattr(settings, 'GEONODE_APPS_NAME', 'Apps'),
+        GEONODE_APPS_NAV_MENU_ENABLE=getattr(settings, 'GEONODE_APPS_NAV_MENU_ENABLE', False),
+        CATALOG_METADATA_TEMPLATE=getattr(settings, "CATALOG_METADATA_TEMPLATE", "catalogue/full_metadata.xml"),
+        UI_REQUIRED_FIELDS=getattr(settings, "UI_REQUIRED_FIELDS", []),
+        REQ_THESAURI=[
+            f"tkeywords-{x.id}"
+            for x in Thesaurus.objects.all()
+            if (x.card_max == -1 and x.card_min == 1) or (x.card_max == 1 and x.card_min == 1)
+        ],
+        ADVANCED_EDIT_EXCLUDE_FIELD=getattr(settings, "ADVANCED_EDIT_EXCLUDE_FIELD", []),
+        PROFILE_EDIT_EXCLUDE_FIELD=getattr(settings, "PROFILE_EDIT_EXCLUDE_FIELD", []),
     )
-
     return defaults

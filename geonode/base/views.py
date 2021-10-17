@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -17,72 +16,187 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+import json
+import logging
 
-
-# Geonode functionality
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.shortcuts import render
-from django.http import HttpResponse
-from django.http import HttpResponseRedirect
-from django.core.exceptions import PermissionDenied
-from django.conf import settings
-from django.utils.translation import ugettext as _
-from django.views.generic import FormView
-
-from guardian.shortcuts import get_objects_for_user
 from dal import views, autocomplete
 from user_messages.models import Message
+from guardian.shortcuts import get_objects_for_user
 
-from geonode.base.utils import OwnerRightsRequestViewUtils
-from geonode.documents.models import Document
-from geonode.layers.models import Layer
+from django.conf import settings
+from django.http import Http404
+from django.shortcuts import render
+from django.http import HttpResponse
+from django.views.generic import FormView
+from django.http import HttpResponseRedirect
+from django.contrib.auth import get_user_model
+from django.utils.translation import ugettext as _
+from django.core.exceptions import PermissionDenied
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.urls import reverse
+
+# Geonode dependencies
 from geonode.maps.models import Map
-from geonode.base.models import ResourceBase, Region, HierarchicalKeyword, ThesaurusKeywordLabel
+from geonode.layers.models import Dataset
 from geonode.utils import resolve_object
-from geonode.security.utils import get_visible_resources
-from geonode.base.forms import BatchEditForm, OwnerRightsRequestForm
+from geonode.base import register_event
+from geonode.documents.models import Document
+from geonode.groups.models import GroupProfile
+from geonode.tasks.tasks import set_permissions
 from geonode.base.forms import CuratedThumbnailForm
+from geonode.resource.manager import resource_manager
+from geonode.security.utils import get_visible_resources
 from geonode.notifications_helper import send_notification
+from geonode.base.utils import OwnerRightsRequestViewUtils
+from geonode.base.forms import UserAndGroupPermissionsForm
+
+from geonode.base.forms import (
+    BatchEditForm,
+    OwnerRightsRequestForm
+)
+from geonode.base.models import (
+    Region,
+    ResourceBase,
+    HierarchicalKeyword,
+    ThesaurusKeyword,
+    ThesaurusKeywordLabel
+)
+
+logger = logging.getLogger(__name__)
 
 
-def batch_modify(request, ids, model):
+def get_url_for_app_model(model, model_class):
+    return reverse(f'admin:{model_class._meta.app_label}_{model}_changelist')
+    # was: return f'/admin/{model_class._meta.app_label}/{model}/'
+
+
+def get_url_for_model(model):
+    url = f'admin:{model.lower()}s_{model.lower()}_changelist'
+    if model.lower() == 'dataset':
+        url = f'admin:layers_{model.lower()}_changelist'
+    return reverse(url)
+    # was: f'/admin/{model.lower()}s/{model.lower()}/'
+
+
+def user_and_group_permission(request, model):
+    if not request.user.is_superuser:
+        raise PermissionDenied
+
+    model_mapper = {
+        "profile": get_user_model(),
+        "groupprofile": GroupProfile
+    }
+
+    model_class = model_mapper[model]
+
+    ids = request.POST.get("ids")
+    if "cancel" in request.POST or not ids:
+        return HttpResponseRedirect(
+            get_url_for_app_model(model, model_class))
+
+    if request.method == 'POST':
+        form = UserAndGroupPermissionsForm(request.POST)
+        ids = ids.split(",")
+        if form.is_valid():
+            resources_names = [layer.name for layer in form.cleaned_data.get('layers')]
+            users_usernames = [user.username for user in model_class.objects.filter(
+                id__in=ids)] if model == 'profile' else None
+            groups_names = [group_profile.group.name for group_profile in model_class.objects.filter(
+                id__in=ids)] if model in ('group', 'groupprofile') else None
+
+            if users_usernames and 'AnonymousUser' in users_usernames and \
+                    (not groups_names or 'anonymous' not in groups_names):
+                if not groups_names:
+                    groups_names = []
+                groups_names.append('anonymous')
+            if groups_names and 'anonymous' in groups_names and \
+                    (not users_usernames or 'AnonymousUser' not in users_usernames):
+                if not users_usernames:
+                    users_usernames = []
+                users_usernames.append('AnonymousUser')
+
+            delete_flag = form.cleaned_data.get('mode') == 'unset'
+            permissions_names = form.cleaned_data.get('permission_type')
+
+            if permissions_names:
+                set_permissions.apply_async(
+                    (permissions_names, resources_names, users_usernames, groups_names, delete_flag))
+
+        return HttpResponseRedirect(
+            get_url_for_app_model(model, model_class))
+
+    form = UserAndGroupPermissionsForm({
+        'permission_type': ('r', ),
+        'mode': 'set',
+    })
+    return render(
+        request,
+        "base/user_and_group_permissions.html",
+        context={
+            "form": form,
+            "model": model
+        }
+    )
+
+
+def batch_modify(request, model):
     if not request.user.is_superuser:
         raise PermissionDenied
     if model == 'Document':
         Resource = Document
-    if model == 'Layer':
-        Resource = Layer
+    if model == 'Dataset':
+        Resource = Dataset
     if model == 'Map':
         Resource = Map
     template = 'base/batch_edit.html'
+    ids = request.POST.get("ids")
 
-    if "cancel" in request.POST:
+    if "cancel" in request.POST or not ids:
         return HttpResponseRedirect(
-            '/admin/{model}s/{model}/'.format(model=model.lower())
-        )
+            get_url_for_model(model))
 
     if request.method == 'POST':
         form = BatchEditForm(request.POST)
         if form.is_valid():
-            for resource in Resource.objects.filter(id__in=ids.split(',')):
-                resource.group = form.cleaned_data['group'] or resource.group
-                resource.owner = form.cleaned_data['owner'] or resource.owner
-                resource.category = form.cleaned_data['category'] or resource.category
-                resource.license = form.cleaned_data['license'] or resource.license
-                resource.date = form.cleaned_data['date'] or resource.date
-                resource.language = form.cleaned_data['language'] or resource.language
-                new_region = form.cleaned_data['regions']
-                if new_region:
-                    resource.regions.add(new_region)
-                keywords = form.cleaned_data['keywords']
-                if keywords:
-                    resource.keywords.clear()
-                    for word in keywords.split(','):
-                        resource.keywords.add(word.strip())
-                resource.save(notify=True)
+            keywords = [keyword.strip() for keyword in
+                        form.cleaned_data.pop("keywords").split(',') if keyword]
+            regions = form.cleaned_data.pop("regions")
+            ids = form.cleaned_data.pop("ids")
+            if not form.cleaned_data.get("date"):
+                form.cleaned_data.pop("date")
+
+            to_update = {}
+            for _key, _value in form.cleaned_data.items():
+                if _value:
+                    to_update[_key] = _value
+            resources = Resource.objects.filter(id__in=ids.split(','))
+            resources.update(**to_update)
+            if regions:
+                regions_through = Resource.regions.through
+                new_regions = [regions_through(region=regions, resourcebase=resource) for resource in resources]
+                regions_through.objects.bulk_create(new_regions, ignore_conflicts=True)
+
+            if keywords:
+                keywords_through = Resource.keywords.through
+                keywords_through.objects.filter(content_object__in=resources).delete()
+
+                def get_or_create(keyword):
+                    try:
+                        return HierarchicalKeyword.objects.get(name=keyword)
+                    except HierarchicalKeyword.DoesNotExist:
+                        return HierarchicalKeyword.add_root(name=keyword)
+                hierarchical_keyword = [get_or_create(keyword) for keyword in keywords]
+
+                new_keywords = []
+                for keyword in hierarchical_keyword:
+                    new_keywords += [keywords_through(
+                        content_object=resource, tag_id=keyword.pk) for resource in resources]
+                keywords_through.objects.bulk_create(new_keywords, ignore_conflicts=True)
+
             return HttpResponseRedirect(
-                '/admin/{model}s/{model}/'.format(model=model.lower())
-            )
+                get_url_for_model(model))
+
         return render(
             request,
             template,
@@ -223,6 +337,36 @@ class ThesaurusKeywordLabelAutocomplete(autocomplete.Select2QuerySetView):
         ]
 
 
+class ThesaurusAvailable(autocomplete.Select2QuerySetView):
+    def get_queryset(self):
+        tid = self.request.GET.get("sysid")
+        lang = self.request.GET.get("lang")
+        qs_local = []
+        qs_non_local = []
+        for key in ThesaurusKeyword.objects.filter(thesaurus_id=tid):
+            label = ThesaurusKeywordLabel.objects.filter(keyword=key).filter(lang=lang)
+            if self.q:
+                label = label.filter(label__icontains=self.q)
+            if label.exists():
+                qs_local.append(label.get())
+            else:
+                if self.q in key.alt_label:
+                    qs_non_local.append(key)
+                elif not self.q:
+                    qs_non_local.append(key)
+
+        return qs_non_local + qs_local
+
+    def get_results(self, context):
+        return [
+            {
+                'id': str(result.keyword.pk) if isinstance(result, ThesaurusKeywordLabel) else str(result.pk),
+                'text': self.get_result_label(result),
+                'selected_text': self.get_selected_result_label(result),
+            } for result in context['object_list']
+        ]
+
+
 class OwnerRightsRequestView(LoginRequiredMixin, FormView):
     template_name = 'owner_rights_request.html'
     form_class = OwnerRightsRequestForm
@@ -248,17 +392,17 @@ class OwnerRightsRequestView(LoginRequiredMixin, FormView):
         if form.is_valid():
             reason = form.cleaned_data['reason']
             notice_type_label = 'request_resource_edit'
-            recipients = OwnerRightsRequestViewUtils.get_message_recipients()
+            recipients = OwnerRightsRequestViewUtils.get_message_recipients(self.resource.owner)
 
             Message.objects.new_message(
                 from_user=request.user,
                 to_users=recipients,
                 subject=_('System message: A request to modify resource'),
-                content=_('The resource owner has requested to modify the resource') + '.'
+                content=_('The resource owner has requested to modify the resource') + '.\n'
                 ' ' +
-                _('Resource title') + ': ' + self.resource.title + '.'
+                _('Resource title') + ': ' + self.resource.title + '.\n'
                 ' ' +
-                _('Reason for the request') + ': "' + reason + '".' +
+                _('Reason for the request') + ': "' + reason + '".\n' +
                 ' ' +
                 _('To allow the change, set the resource to not "Approved" under the metadata settings' +
                   'and write message to the owner to notify him') + '.'
@@ -271,3 +415,44 @@ class OwnerRightsRequestView(LoginRequiredMixin, FormView):
             return self.form_valid(form)
         else:
             return self.form_invalid(form)
+
+
+@login_required
+def resource_clone(request):
+    try:
+        uuid = request.POST['uuid']
+        resource = resolve_object(
+            request, ResourceBase, {
+                'uuid': uuid}, 'base.change_resourcebase')
+    except PermissionDenied:
+        return HttpResponse("Not allowed", status=403)
+    except Exception:
+        raise Http404("Not found")
+    if not resource:
+        raise Http404("Not found")
+
+    out = {}
+    try:
+        getattr(resource_manager, "copy")(
+            resource.get_real_instance(),
+            uuid=None,
+            defaults={
+                'user': request.user})
+        out['success'] = True
+        out['message'] = _("Resource Cloned Successfully!")
+    except Exception as e:
+        logger.exception(e)
+        out['success'] = False
+        out['message'] = _(f"Error Occurred while Cloning the Resource: {e}")
+        out['errors'] = str(e)
+
+    if out['success']:
+        status_code = 200
+        register_event(request, 'change', resource)
+    else:
+        status_code = 400
+
+    return HttpResponse(
+        json.dumps(out),
+        content_type='application/json',
+        status=status_code)

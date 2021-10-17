@@ -9,6 +9,7 @@ dist
 .idea/
 .vscode/
 .pytest_cache/
+pip-wheel-metadata/
 # supporting stuff pulled in by paver script
 geonode/development.db
 /geoserver/
@@ -31,8 +32,6 @@ geonode/local_settings.py
 
 # Uploaded files
 geonode/uploaded
-geonode/qgis_layer
-geonode/qgis_tiles
 
 #Testing output
 .coverage
@@ -96,3 +95,5 @@ scripts/spcgeonode/_volume_*
 /geonode/development.db-journal
 
 /output.bin
+
+/worker.state

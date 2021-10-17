@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,8 +17,8 @@
 #
 #########################################################################
 
-import datetime
 import os
+import datetime
 import subprocess
 
 
@@ -43,16 +42,17 @@ def get_version(version=None):
         sub = mapping[version[3]] + str(version[4])
     if git_changeset:
         if version[3] == 'unstable':
-            sub += '.dev%s' % git_changeset
+            sub += f'.dev{git_changeset}'
         elif version[3] != 'final':
-            sub += '.build%s' % git_changeset
+            sub += f'.build{git_changeset}'
     return main + sub
 
 
 def version(request, version=None):
     from django.http import HttpResponse
+    from django.utils.html import escape
     _v = get_version(version=version)
-    return HttpResponse(_v)
+    return HttpResponse(escape(_v))
 
 
 def get_git_changeset():

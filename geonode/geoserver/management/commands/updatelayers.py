@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
-# Copyright (C) 2016 OSGeo
+# Copyright (C) 2021 OSGeo
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -132,7 +131,7 @@ class Command(BaseCommand):
                                               dict_['traceback'])
             if remove_deleted:
                 print("Detailed report of layers to be deleted from GeoNode that failed:")
-                for dict_ in output['deleted_layers']:
+                for dict_ in output['deleted_datasets']:
                     if dict_['status'] == 'delete_failed':
                         print("\n\n", dict_['name'], "\n================")
                         traceback.print_exception(dict_['exception_type'],
@@ -140,17 +139,19 @@ class Command(BaseCommand):
                                                   dict_['traceback'])
 
         if verbosity > 0:
-            print("\n\nFinished processing {} layers in {} seconds.\n".format(
-                len(output['layers']), round(output['stats']['duration_sec'], 2)))
-            print("{} Created layers".format(output['stats']['created']))
-            print("{} Updated layers".format(output['stats']['updated']))
-            print("{} Failed layers".format(output['stats']['failed']))
+            print(
+                f"\n\nFinished processing {len(output['layers'])} "
+                f"layers in {output['stats']['duration_sec']:.2f} seconds.\n"
+            )
+            print(f"{output['stats']['created']} Created layers")
+            print(f"{output['stats']['updated']} Updated layers")
+            print(f"{output['stats']['failed']} Failed layers")
             try:
-                duration_layer = round(
+                duration_dataset = round(
                     output['stats']['duration_sec'] * 1.0 / len(output['layers']), 2)
             except ZeroDivisionError:
-                duration_layer = 0
+                duration_dataset = 0
             if len(output) > 0:
-                print("{} seconds per layer".format(duration_layer))
+                print(f"{duration_dataset} seconds per layer")
             if remove_deleted:
-                print("\n{} Deleted layers".format(output['stats']['deleted']))
+                print(f"\n{output['stats']['deleted']} Deleted layers")

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -24,9 +23,8 @@ from django.db.models import Prefetch
 from modeltranslation.admin import TabbedTranslationAdmin
 
 from geonode.base.admin import ResourceBaseAdminForm
+from geonode.layers.models import Dataset, Attribute, Style
 from geonode.base.admin import metadata_batch_edit, set_batch_permissions
-from geonode.layers.models import Layer, Attribute, Style
-from geonode.layers.models import LayerFile, UploadSession
 
 from geonode.base.fields import MultiThesauriField
 from geonode.base.models import ThesaurusKeyword, ThesaurusKeywordLabel
@@ -38,10 +36,10 @@ class AttributeInline(admin.TabularInline):
     model = Attribute
 
 
-class LayerAdminForm(ResourceBaseAdminForm):
+class DatasetAdminForm(ResourceBaseAdminForm):
 
     class Meta(ResourceBaseAdminForm.Meta):
-        model = Layer
+        model = Dataset
         fields = '__all__'
 
     tkeywords = MultiThesauriField(
@@ -57,7 +55,7 @@ class LayerAdminForm(ResourceBaseAdminForm):
     )
 
 
-class LayerAdmin(TabbedTranslationAdmin):
+class DatasetAdmin(TabbedTranslationAdmin):
     list_display = (
         'id',
         'alternate',
@@ -67,20 +65,31 @@ class LayerAdmin(TabbedTranslationAdmin):
         'group',
         'is_approved',
         'is_published',
+        'state',
+        'dirty_state',
         'metadata_completeness')
     list_display_links = ('id',)
-    list_editable = ('title', 'category', 'group', 'is_approved', 'is_published')
-    list_filter = ('storeType', 'owner', 'category', 'group',
+    list_editable = ('title', 'category', 'group', 'is_approved', 'is_published', 'dirty_state')
+    list_filter = ('subtype', 'owner', 'category', 'group',
                    'restriction_code_type__identifier', 'date', 'date_type',
-                   'is_approved', 'is_published')
+                   'is_approved', 'is_published', 'state', 'dirty_state')
     search_fields = ('alternate', 'title', 'abstract', 'purpose',
-                     'is_approved', 'is_published',)
+                     'is_approved', 'is_published', 'state')
     filter_horizontal = ('contacts',)
     date_hierarchy = 'date'
     readonly_fields = ('uuid', 'alternate', 'workspace')
     inlines = [AttributeInline]
-    form = LayerAdminForm
+    form = DatasetAdminForm
     actions = [metadata_batch_edit, set_batch_permissions]
+
+    def delete_queryset(self, request, queryset):
+        """
+        We need to invoke the 'ResourceBase.delete' method even when deleting
+        through the admin batch action
+        """
+        for obj in queryset:
+            from geonode.resource.manager import resource_manager
+            resource_manager.delete(obj.uuid, instance=obj)
 
 
 class AttributeAdmin(admin.ModelAdmin):
@@ -88,13 +97,13 @@ class AttributeAdmin(admin.ModelAdmin):
     list_display_links = ('id',)
     list_display = (
         'id',
-        'layer',
+        'dataset',
         'attribute',
         'description',
         'attribute_label',
         'attribute_type',
         'display_order')
-    list_filter = ('layer', 'attribute_type')
+    list_filter = ('dataset', 'attribute_type')
     search_fields = ('attribute', 'attribute_label',)
 
 
@@ -106,17 +115,6 @@ class StyleAdmin(admin.ModelAdmin):
     search_fields = ('name', 'workspace',)
 
 
-class LayerFileInline(admin.TabularInline):
-    model = LayerFile
-
-
-class UploadSessionAdmin(admin.ModelAdmin):
-    model = UploadSession
-    list_display = ('resource', 'date', 'user', 'processed')
-    inlines = [LayerFileInline]
-
-
-admin.site.register(Layer, LayerAdmin)
+admin.site.register(Dataset, DatasetAdmin)
 admin.site.register(Attribute, AttributeAdmin)
 admin.site.register(Style, StyleAdmin)
-admin.site.register(UploadSession, UploadSessionAdmin)

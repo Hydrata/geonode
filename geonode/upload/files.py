@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -23,19 +22,20 @@ scattered over the codebase
 
 @todo complete and use
 '''
-
+import re
+import os
 import os.path
-
-from geonode.utils import fixup_shp_columnnames
-from geoserver.resource import FeatureType, Coverage
-from django.utils.translation import ugettext as _
+import logging
+import zipfile
 
 from collections import UserList
-import zipfile
-import os
-import re
-import logging
+from geoserver.resource import FeatureType, Coverage
 
+from django.utils.translation import ugettext as _
+from django.core.exceptions import SuspiciousFileOperation
+
+from geonode.utils import fixup_shp_columnnames
+from geonode.storage.manager import storage_manager
 
 logger = logging.getLogger(__name__)
 vector = FeatureType.resource_type
@@ -61,7 +61,7 @@ class SpatialFiles(UserList):
         return all
 
 
-class SpatialFile(object):
+class SpatialFile:
 
     def __init__(self, base_file, file_type, auxillary_files,
                  sld_files, xml_files):
@@ -75,17 +75,17 @@ class SpatialFile(object):
         return [self.base_file] + self.auxillary_files
 
     def __repr__(self):
-        return "<SpatialFile base_file=%s file_type=%s aux=%s sld=%s xml=%s>" % (
-            self.base_file, self.file_type, self.auxillary_files, self.sld_files, self.xml_files)
+        return f"<SpatialFile base_file={self.base_file} file_type={self.file_type} \
+aux={self.auxillary_files} sld={self.sld_files} xml={self.xml_files}>"
 
 
-class FileType(object):
+class FileType:
 
-    def __init__(self, name, code, layer_type, aliases=None,
+    def __init__(self, name, code, dataset_type, aliases=None,
                  auxillary_file_exts=None):
         self.name = name
         self.code = code
-        self.layer_type = layer_type
+        self.dataset_type = dataset_type
         self.aliases = list(aliases) if aliases is not None else []
         self.auxillary_file_exts = list(
             auxillary_file_exts) if auxillary_file_exts is not None else []
@@ -114,10 +114,11 @@ class FileType(object):
         return aux_files, slds, xmls
 
     def __repr__(self):
-        return "<FileType %s>" % self.code
+        return f"<FileType {self.code}>"
 
 
 TYPE_UNKNOWN = FileType("unknown", None, None)
+ALLOWED_EXTENSIONS = ['zip', 'shp', 'asc', 'ascii', 'csv', 'json', 'geojson', 'tif', 'tiff', 'geotif', 'geotiff']
 
 _keep_original_data = ('kmz', 'zip-mosaic')
 _tif_extensions = ("tif", "tiff", "geotif", "geotiff")
@@ -211,13 +212,14 @@ def _rename_files(file_names):
     files = []
     for f in file_names:
         dirname, base_name = os.path.split(f)
-        safe = _clean_string(base_name)
-        if safe != base_name:
-            safe = os.path.join(dirname, safe)
-            os.rename(f, safe)
-            files.append(safe)
-        else:
-            files.append(f)
+        if dirname and base_name:
+            safe = _clean_string(base_name)
+            if safe != base_name:
+                safe = os.path.join(dirname, safe)
+                os.rename(f, safe)
+                files.append(safe)
+            else:
+                files.append(f)
     return files
 
 
@@ -240,7 +242,6 @@ def get_scan_hint(valid_extensions):
 
     This function is useful mainly for those file types that can carry
     either vector or raster formats, like the KML type.
-
     """
     if "kml" in valid_extensions:
         if len(valid_extensions) == 2 and valid_extensions[1] == 'sld':
@@ -259,20 +260,32 @@ def get_scan_hint(valid_extensions):
 def scan_file(file_name, scan_hint=None, charset=None):
     '''get a list of SpatialFiles for the provided file'''
     if not os.path.exists(file_name):
-        raise Exception(_("Could not access to uploaded data."))
+        try:
+            if not storage_manager.exists(file_name):
+                raise Exception(_("Could not access to uploaded data."))
+        except SuspiciousFileOperation:
+            pass
 
     dirname = os.path.dirname(file_name)
-    if zipfile.is_zipfile(file_name):
-        paths, kept_zip = _process_zip(file_name,
-                                       dirname,
-                                       scan_hint=scan_hint,
-                                       charset=charset)
-        archive = file_name if kept_zip else None
+    paths = []
+    if zipfile.is_zipfile(file_name) or len(os.path.splitext(file_name)) > 0 and os.path.splitext(file_name)[1].lower() == '.zip':
+        try:
+            paths, kept_zip = _process_zip(
+                file_name,
+                dirname,
+                scan_hint=scan_hint,
+                charset=charset)
+            archive = file_name if kept_zip else None
+        except Exception as e:
+            logger.debug(e)
+            archive = file_name
     else:
-        paths = []
         for p in os.listdir(dirname):
             _f = os.path.join(dirname, p)
-            fixup_shp_columnnames(_f, charset)
+            try:
+                fixup_shp_columnnames(_f, charset)
+            except Exception as e:
+                logger.debug(e)
             paths.append(_f)
         archive = None
     if paths is not None:
@@ -298,8 +311,7 @@ def scan_file(file_name, scan_hint=None, charset=None):
         if len(found) == 1:
             found[0].xml_files = xml_files
         else:
-            raise Exception(_("One or more XML files was provided, but no " +
-                              "matching files were found for them."))
+            raise Exception(_("One or more XML files was provided, but no matching files were found for them."))
 
     # detect slds and assign if a single upload is found
     sld_files = _find_file_type(safe_paths, extension='.sld')
@@ -307,8 +319,7 @@ def scan_file(file_name, scan_hint=None, charset=None):
         if len(found) == 1:
             found[0].sld_files = sld_files
         else:
-            raise Exception(_("One or more SLD files was provided, but no " +
-                              "matching files were found for them."))
+            raise Exception(_("One or more SLD files was provided, but no matching files were found for them."))
     return SpatialFiles(dirname, found, archive=archive)
 
 

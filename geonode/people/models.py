@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -26,17 +25,20 @@ from django.conf import settings
 
 from django.db import models
 from django.db.models import signals
+from django.db.models.deletion import ProtectedError
 
 from django.urls import reverse
 from django.contrib.sites.models import Site
 from django.utils.translation import ugettext_lazy as _
-from django.contrib.auth.models import AbstractUser, UserManager
+from django.contrib.auth.models import AbstractUser, Permission, UserManager
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 
 from taggit.managers import TaggableManager
 
 from geonode.base.enumerations import COUNTRIES
+from geonode.base.models import Configuration, ResourceBase
 from geonode.groups.models import GroupProfile
+from geonode.security.permissions import PERMISSIONS, READ_ONLY_AFFECTED_PERMISSIONS
 
 from allauth.account.signals import user_signed_up
 from allauth.socialaccount.signals import social_account_added
@@ -132,14 +134,14 @@ class Profile(AbstractUser):
     )
 
     def __init__(self, *args, **kwargs):
-        super(Profile, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._previous_active_state = self.is_active
 
     def get_absolute_url(self):
         return reverse('profile_detail', args=[self.username, ])
 
     def __str__(self):
-        return "{0}".format(self.username)
+        return str(self.username)
 
     @staticmethod
     def class_name(value):
@@ -170,20 +172,18 @@ class Profile(AbstractUser):
     @property
     def name_long(self):
         if self.first_name and self.last_name:
-            return '%s %s (%s)' % (self.first_name,
-                                   self.last_name, self.username)
+            return f'{self.first_name} {self.last_name} ({self.username})'
         elif (not self.first_name) and self.last_name:
-            return '%s (%s)' % (self.last_name, self.username)
+            return f'{self.last_name} ({self.username})'
         elif self.first_name and (not self.last_name):
-            return '%s (%s)' % (self.first_name, self.username)
+            return f'{self.first_name} ({self.username})'
         else:
             return self.username
 
     @property
     def full_name_or_nick(self):
         if self.first_name and self.last_name:
-            return '%s %s' % (self.first_name,
-                              self.last_name)
+            return f'{self.first_name} {self.last_name}'
         else:
             return self.username
 
@@ -196,10 +196,43 @@ class Profile(AbstractUser):
         return format_address(self.delivery, self.zipcode,
                               self.city, self.area, self.country)
 
+    @property
+    def perms(self):
+        if self.is_superuser or self.is_staff:
+            # return all permissions for admins
+            perms = PERMISSIONS.values()
+        else:
+            user_groups = self.groups.values_list('name', flat=True)
+            group_perms = Permission.objects.filter(
+                group__name__in=user_groups
+            ).distinct().values_list('codename', flat=True)
+            # return constant names defined by GeoNode
+            perms = [PERMISSIONS[db_perm] for db_perm in group_perms]
+
+        # check READ_ONLY mode
+        config = Configuration.load()
+        if config.read_only:
+            # exclude permissions affected by readonly
+            perms = [perm for perm in perms if perm not in READ_ONLY_AFFECTED_PERMISSIONS]
+        return perms
+
     def save(self, *args, **kwargs):
-        super(Profile, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
         self._notify_account_activated()
         self._previous_active_state = self.is_active
+
+    def delete(self, using=None, keep_parents=False):
+        resources = ResourceBase.objects.filter(owner=self)
+        if resources:
+            default_owner = (
+                Profile.objects.filter(username='admin').first() or
+                Profile.objects.filter(is_superuser=True).first()
+            )
+            if default_owner:
+                resources.update(owner=default_owner)
+            else:
+                raise ProtectedError
+        return super().delete(using=using, keep_parents=keep_parents)
 
     def _notify_account_activated(self):
         """Notify user that its account has been activated by a staff member"""

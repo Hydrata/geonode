@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -20,13 +19,12 @@
 
 from geonode.tests.base import GeoNodeBaseTestSupport
 
-import contextlib
 import os
-import shutil
-import tempfile
 import zipfile
-import geonode.upload.files as files
+import tempfile
+import contextlib
 
+import geonode.upload.files as files
 from geonode.upload.files import SpatialFiles, scan_file
 from geonode.upload.files import _rename_files, _contains_bad_names
 
@@ -43,21 +41,21 @@ def create_files(names, zipped=False):
         else:
             try:
                 open(f, 'wb').close()
-            except IOError:
+            except OSError:
                 # windows fails at writing special characters
                 # need to do something better here
                 print("Test does not work in Windows")
     if zipped:
         basefile = os.path.join(tmpdir, 'files.zip')
         zf = zipfile.ZipFile(basefile, 'w', allowZip64=True)
-        for f in names:
-            zf.write(f, os.path.basename(f))
-        zf.close()
+        with zf:
+            for f in names:
+                zf.write(f, os.path.basename(f))
+
         for f in names:
             os.unlink(f)
         names = [basefile]
     yield names
-    shutil.rmtree(tmpdir)
 
 
 class FilesTests(GeoNodeBaseTestSupport):
@@ -66,7 +64,7 @@ class FilesTests(GeoNodeBaseTestSupport):
         for t in files.types:
             self.assertTrue(t.code is not None)
             self.assertTrue(t.name is not None)
-            self.assertTrue(t.layer_type is not None)
+            self.assertTrue(t.dataset_type is not None)
 
     def test_contains_bad_names(self):
         self.assertTrue(_contains_bad_names(['1', 'a']))
@@ -77,7 +75,7 @@ class FilesTests(GeoNodeBaseTestSupport):
             try:
                 renamed = files._rename_files(tests)
                 self.assertTrue(renamed[0].endswith("junk_y_"))
-            except WindowsError:
+            except OSError:
                 pass
 
     def test_rename_and_prepare(self):
@@ -92,7 +90,7 @@ class FilesTests(GeoNodeBaseTestSupport):
         """
         exts = ('.shp', '.shx', '.sld', '.xml', '.prj', '.dbf')
 
-        with create_files(['san_andres_y_providencia_location{0}'.format(s) for s in exts]) as tests:
+        with create_files([f'san_andres_y_providencia_location{s}' for s in exts]) as tests:
             shp = [s for s in tests if s.endswith('.shp')][0]
             spatial_files = scan_file(shp)
             self.assertTrue(isinstance(spatial_files, SpatialFiles))
@@ -126,7 +124,7 @@ class FilesTests(GeoNodeBaseTestSupport):
 
             basedir = os.path.dirname(spatial_file.base_file)
             for f in file_names:
-                path = os.path.join(basedir, '_%s' % f)
+                path = os.path.join(basedir, f'_{f}')
                 self.assertTrue(os.path.exists(path))
 
         # Test the scan_file function with a raster spatial file takes SLD also.

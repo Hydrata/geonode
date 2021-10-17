@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2019 OSGeo
@@ -17,11 +16,11 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-from geonode.tests.base import GeoNodeBaseTestSupport, GeoNodeLiveTestSupport
+from geonode.tests.base import GeoNodeBaseTestSupport
 
-import base64
-import json
 import os
+import json
+import base64
 import shutil
 import tempfile
 
@@ -34,22 +33,24 @@ from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.test.utils import override_settings
 
-from guardian.shortcuts import assign_perm, remove_perm
+from guardian.shortcuts import assign_perm
 
 from geonode import geoserver
-from geonode import GeoNodeException
+from geonode.base.models import Configuration
 from geonode.decorators import on_ogc_backend
 
-from geonode.layers.models import Layer, Style
-from geonode.layers.populate_layers_data import create_layer_data
-from geonode.layers.utils import create_gs_thumbnail_geonode
+from geonode.utils import OGC_Servers_Handler
+from geonode.layers.models import Dataset, Style
+from geonode.layers.populate_datasets_data import create_dataset_data
+from geonode.base.populate_test_data import (
+    all_public,
+    create_models,
+    remove_models,
+    create_single_dataset)
 from geonode.geoserver.helpers import (
     gs_catalog,
     get_sld_for,
-    OGC_Servers_Handler,
-    extract_name_from_sld,
-    create_gs_thumbnail,
-    _prepare_thumbnail_body_from_opts)
+    extract_name_from_sld)
 
 import logging
 
@@ -548,36 +549,82 @@ SLDS = {
 
 class LayerTests(GeoNodeBaseTestSupport):
 
-    type = 'layer'
+    type = 'dataset'
+
+    fixtures = [
+        'initial_data.json',
+        'group_test_data.json',
+        'default_oauth_apps.json'
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        create_models(type=cls.get_type, integration=cls.get_integration)
+        all_public()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        remove_models(cls.get_obj_ids, type=cls.get_type, integration=cls.get_integration)
 
     def setUp(self):
-        super(LayerTests, self).setUp()
+        super().setUp()
         self.user = 'admin'
         self.passwd = 'admin'
-        create_layer_data()
+        create_dataset_data()
+        self.config = Configuration.load()
+
+        self.OGC_DEFAULT_SETTINGS = {
+            'default': {
+                'BACKEND': 'geonode.geoserver',
+                'LOCATION': 'http://localhost:8080/geoserver/',
+                'USER': 'admin',
+                'PASSWORD': 'geoserver',
+                'MAPFISH_PRINT_ENABLED': True,
+                'PRINT_NG_ENABLED': True,
+                'GEONODE_SECURITY_ENABLED': True,
+                'GEOFENCE_SECURITY_ENABLED': True,
+                'WMST_ENABLED': False,
+                'BACKEND_WRITE_ENABLED': True,
+                'WPS_ENABLED': False,
+                'DATASTORE': '',
+            }
+        }
+
+        self.UPLOADER_DEFAULT_SETTINGS = {
+            'BACKEND': 'geonode.importer',
+            'OPTIONS': {
+                'TIME_ENABLED': False,
+                'MOSAIC_ENABLED': False}}
+
+        self.DATABASE_DEFAULT_SETTINGS = {
+            'default': {
+                'ENGINE': 'django.db.backends.sqlite3',
+                'NAME': 'development.db'}}
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_style_manager(self):
         """
-        Ensures the layer_style_manage route returns a 200.
+        Ensures the dataset_style_manage route returns a 200.
         """
-        layer = Layer.objects.all()[0]
+        layer = Dataset.objects.all()[0]
 
         bob = get_user_model().objects.get(username='bobby')
-        assign_perm('change_layer_style', bob, layer)
+        assign_perm('change_dataset_style', bob, layer)
 
         logged_in = self.client.login(username='bobby', password='bob')
         self.assertEqual(logged_in, True)
         response = self.client.get(
             reverse(
-                'layer_style_manage', args=(
+                'dataset_style_manage', args=(
                     layer.alternate,)))
         self.assertEqual(response.status_code, 200)
 
         form_data = {'default_style': 'polygon'}
         response = self.client.post(
             reverse(
-                'layer_style_manage', args=(
+                'dataset_style_manage', args=(
                     layer.alternate,)), data=form_data)
         self.assertEqual(response.status_code, 302)
 
@@ -605,8 +652,8 @@ class LayerTests(GeoNodeBaseTestSupport):
             # Test 'san_andres_y_providencia.sld'
             san_andres_y_providencia_sld_file = os.path.join(
                 d, "san_andres_y_providencia.sld")
-            san_andres_y_providencia_sld_xml = open(
-                san_andres_y_providencia_sld_file).read()
+            with open(san_andres_y_providencia_sld_file) as san_andres_y_providencia_sld_xml_file:
+                san_andres_y_providencia_sld_xml = san_andres_y_providencia_sld_xml_file.read()
             san_andres_y_providencia_sld_name = extract_name_from_sld(
                 None, san_andres_y_providencia_sld_xml)
             self.assertEqual(
@@ -615,21 +662,24 @@ class LayerTests(GeoNodeBaseTestSupport):
 
             # Test 'lac.sld'
             lac_sld_file = os.path.join(d, "lac.sld")
-            lac_sld_xml = open(lac_sld_file).read()
+            with open(lac_sld_file) as lac_sld_xml_file:
+                lac_sld_xml = lac_sld_xml_file.read()
             lac_sld_name = extract_name_from_sld(
                 None, lac_sld_xml, sld_file=lac_sld_file)
             self.assertEqual(lac_sld_name, 'LAC NonIndigenous Access to Sanitation')
 
             # Test 'freshgwabs2.sld'
             freshgwabs2_sld_file = os.path.join(d, "freshgwabs2.sld")
-            freshgwabs2_sld_xml = open(freshgwabs2_sld_file).read()
+            with open(freshgwabs2_sld_file) as freshgwabs2_sld_xml_file:
+                freshgwabs2_sld_xml = freshgwabs2_sld_xml_file.read()
             freshgwabs2_sld_name = extract_name_from_sld(
                 None, freshgwabs2_sld_xml, sld_file=freshgwabs2_sld_file)
             self.assertEqual(freshgwabs2_sld_name, 'freshgwabs2')
 
             # Test 'raster.sld'
             raster_sld_file = os.path.join(d, "raster.sld")
-            raster_sld_xml = open(raster_sld_file).read()
+            with open(raster_sld_file) as raster_sld_xml_file:
+                raster_sld_xml = raster_sld_xml_file.read()
             raster_sld_name = extract_name_from_sld(
                 None, raster_sld_xml, sld_file=raster_sld_file)
             self.assertEqual(
@@ -638,138 +688,18 @@ class LayerTests(GeoNodeBaseTestSupport):
 
             # Test 'line.sld'
             line_sld_file = os.path.join(d, "line.sld")
-            line_sld_xml = open(line_sld_file).read()
+            with open(line_sld_file) as line_sld_xml_file:
+                line_sld_xml = line_sld_xml_file.read()
             line_sld_name = extract_name_from_sld(
                 None, line_sld_xml, sld_file=line_sld_file)
             self.assertEqual(line_sld_name, 'line 3')
         finally:
             if d is not None:
-                shutil.rmtree(d)
+                shutil.rmtree(d, ignore_errors=True)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_feature_edit_check(self):
-        """Verify that the feature_edit_check view is behaving as expected
-        """
-
-        # Setup some layer names to work with
-        layer = Layer.objects.all()[0]
-        valid_layer_typename = layer.alternate
-        layer.set_default_permissions()
-        invalid_layer_typename = "n0ch@nc3"
-
-        # Test that an invalid layer.typename is handled for properly
-        response = self.client.post(
-            reverse(
-                'feature_edit_check',
-                args=(
-                    invalid_layer_typename,
-                )))
-        self.assertEqual(response.status_code, 200)
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], False)
-
-        # First test un-authenticated
-        response = self.client.post(
-            reverse(
-                'feature_edit_check',
-                args=(
-                    valid_layer_typename,
-                )))
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], False)
-
-        # Next Test with a user that has the proper perms (is owner)
-        logged_in = self.client.login(username='bobby', password='bob')
-        self.assertEqual(logged_in, True)
-        response = self.client.post(
-            reverse(
-                'feature_edit_check',
-                args=(
-                    valid_layer_typename,
-                )))
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], True)
-
-        # Let's change layer permissions and try again with non-owner
-        norman = get_user_model().objects.get(username='norman')
-        remove_perm('change_layer_data', norman, layer)
-        assign_perm('change_layer_style', norman, layer)
-        perms = layer.get_all_level_info()
-        self.assertIn('change_layer_style', perms['users'][norman])
-        self.assertNotIn('change_layer_data', perms['users'][norman])
-
-        logged_in = self.client.login(username='norman', password='norman')
-        self.assertEqual(logged_in, True)
-        response = self.client.post(
-            reverse(
-                'feature_edit_check',
-                args=(
-                    valid_layer_typename,
-                )))
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], False)
-
-        response = self.client.post(
-            reverse(
-                'style_edit_check',
-                args=(
-                    valid_layer_typename,
-                )))
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], True)
-
-        # Login as a user with the proper permission and test the endpoint
-        logged_in = self.client.login(username='admin', password='admin')
-        self.assertEqual(logged_in, True)
-        response = self.client.post(
-            reverse(
-                'feature_edit_check',
-                args=(
-                    valid_layer_typename,
-                )))
-        content = response.content
-        if isinstance(content, bytes):
-            content = content.decode('UTF-8')
-        response_json = json.loads(content)
-        self.assertEqual(response_json['authorized'], True)
-
-        layer = Layer.objects.all()[0]
-        layer.storeType = "dataStore"
-        layer.save()
-
-        # Test that the method returns authorized=True if it's a datastore
-        if settings.OGC_SERVER['default']['DATASTORE']:
-            # The check was moved from the template into the view
-            response = self.client.post(
-                reverse(
-                    'feature_edit_check',
-                    args=(
-                        valid_layer_typename,
-                    )))
-            content = response.content
-            if isinstance(content, bytes):
-                content = content.decode('UTF-8')
-            response_json = json.loads(content)
-            self.assertEqual(response_json['authorized'], True)
-
-    @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_layer_acls(self):
-        """ Verify that the layer_acls view is behaving as expected
+    def test_dataset_acls(self):
+        """ Verify that the dataset_acls view is behaving as expected
         """
 
         # Test that HTTP_AUTHORIZATION in request.META is working properly
@@ -777,18 +707,16 @@ class LayerTests(GeoNodeBaseTestSupport):
         invalid_uname_pw = b"n0t:v@l1d"
 
         valid_auth_headers = {
-            'HTTP_AUTHORIZATION': 'basic ' +
-            base64.b64encode(valid_uname_pw).decode(),
+            'HTTP_AUTHORIZATION': f"basic {base64.b64encode(valid_uname_pw).decode()}",
         }
 
         invalid_auth_headers = {
-            'HTTP_AUTHORIZATION': 'basic ' +
-            base64.b64encode(invalid_uname_pw).decode(),
+            'HTTP_AUTHORIZATION': f"basic {base64.b64encode(invalid_uname_pw).decode()}",
         }
 
         bob = get_user_model().objects.get(username='bobby')
-        layer_ca = Layer.objects.get(alternate='geonode:CA')
-        assign_perm('change_layer_data', bob, layer_ca)
+        dataset_ca = Dataset.objects.get(alternate='geonode:CA')
+        assign_perm('change_dataset_data', bob, dataset_ca)
 
         # Test that requesting when supplying the geoserver credentials returns
         # the expected json
@@ -808,7 +736,7 @@ class LayerTests(GeoNodeBaseTestSupport):
                      'geonode:fleem'],
             'rw': ['geonode:CA']
         }
-        response = self.client.get(reverse('layer_acls'), **valid_auth_headers)
+        response = self.client.get(reverse('dataset_acls'), **valid_auth_headers)
         content = response.content
         if isinstance(content, bytes):
             content = content.decode('UTF-8')
@@ -819,7 +747,7 @@ class LayerTests(GeoNodeBaseTestSupport):
         # Test that requesting when supplying invalid credentials returns the
         # appropriate error code
         response = self.client.get(
-            reverse('layer_acls'),
+            reverse('dataset_acls'),
             **invalid_auth_headers)
         self.assertEqual(response.status_code, 401)
 
@@ -827,7 +755,7 @@ class LayerTests(GeoNodeBaseTestSupport):
         self.client.login(username='admin', password='admin')
 
         # Basic check that the returned content is at least valid json
-        response = self.client.get(reverse('layer_acls'))
+        response = self.client.get(reverse('dataset_acls'))
         content = response.content
         if isinstance(content, bytes):
             content = content.decode('UTF-8')
@@ -845,17 +773,15 @@ class LayerTests(GeoNodeBaseTestSupport):
         invalid_uname_pw = b"n0t:v@l1d"
 
         valid_auth_headers = {
-            'HTTP_AUTHORIZATION': 'basic ' +
-            base64.b64encode(valid_uname_pw).decode(),
+            'HTTP_AUTHORIZATION': f"basic {base64.b64encode(valid_uname_pw).decode()}",
         }
 
         invalid_auth_headers = {
-            'HTTP_AUTHORIZATION': 'basic ' +
-            base64.b64encode(invalid_uname_pw).decode(),
+            'HTTP_AUTHORIZATION': f"basic {base64.b64encode(invalid_uname_pw).decode()}",
         }
 
         response = self.client.get(
-            reverse('layer_resolve_user'),
+            reverse('dataset_resolve_user'),
             **valid_auth_headers)
         content = response.content
         if isinstance(content, bytes):
@@ -870,7 +796,7 @@ class LayerTests(GeoNodeBaseTestSupport):
         # Test that requesting when supplying invalid credentials returns the
         # appropriate error code
         response = self.client.get(
-            reverse('layer_acls'),
+            reverse('dataset_acls'),
             **invalid_auth_headers)
         self.assertEqual(response.status_code, 401)
 
@@ -878,7 +804,7 @@ class LayerTests(GeoNodeBaseTestSupport):
         self.client.login(username='admin', password='admin')
 
         # Basic check that the returned content is at least valid json
-        response = self.client.get(reverse('layer_resolve_user'))
+        response = self.client.get(reverse('dataset_resolve_user'))
         content = response.content
         if isinstance(content, bytes):
             content = content.decode('UTF-8')
@@ -887,41 +813,6 @@ class LayerTests(GeoNodeBaseTestSupport):
         self.assertEqual('admin', response_json['user'])
         self.assertEqual('admin', response_json['fullname'])
         self.assertEqual('ad@m.in', response_json['email'])
-
-
-class UtilsTests(GeoNodeBaseTestSupport):
-
-    type = 'layer'
-
-    def setUp(self):
-        super(UtilsTests, self).setUp()
-        self.OGC_DEFAULT_SETTINGS = {
-            'default': {
-                'BACKEND': 'geonode.geoserver',
-                'LOCATION': 'http://localhost:8080/geoserver/',
-                'USER': 'admin',
-                'PASSWORD': 'geoserver',
-                'MAPFISH_PRINT_ENABLED': True,
-                'PRINT_NG_ENABLED': True,
-                'GEONODE_SECURITY_ENABLED': True,
-                'GEOFENCE_SECURITY_ENABLED': True,
-                'WMST_ENABLED': False,
-                'BACKEND_WRITE_ENABLED': True,
-                'WPS_ENABLED': False,
-                'DATASTORE': str(),
-            }
-        }
-
-        self.UPLOADER_DEFAULT_SETTINGS = {
-            'BACKEND': 'geonode.rest',
-            'OPTIONS': {
-                'TIME_ENABLED': False,
-                'MOSAIC_ENABLED': False}}
-
-        self.DATABASE_DEFAULT_SETTINGS = {
-            'default': {
-                'ENGINE': 'django.db.backends.sqlite3',
-                'NAME': 'development.db'}}
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_ogc_server_settings(self):
@@ -932,7 +823,7 @@ class UtilsTests(GeoNodeBaseTestSupport):
         with override_settings(OGC_SERVER=self.OGC_DEFAULT_SETTINGS, UPLOADER=self.UPLOADER_DEFAULT_SETTINGS):
             OGC_SERVER = self.OGC_DEFAULT_SETTINGS.copy()
             OGC_SERVER.update(
-                {'PUBLIC_LOCATION': 'http://localhost:8080/geoserver/'})
+                {'PUBLIC_LOCATION': 'http://geoserver:8080/geoserver/'})
 
             ogc_settings = OGC_Servers_Handler(OGC_SERVER)['default']
 
@@ -945,7 +836,7 @@ class UtilsTests(GeoNodeBaseTestSupport):
                 default.get('PUBLIC_LOCATION'))
             self.assertEqual(ogc_settings.USER, default.get('USER'))
             self.assertEqual(ogc_settings.PASSWORD, default.get('PASSWORD'))
-            self.assertEqual(ogc_settings.DATASTORE, str())
+            self.assertEqual(ogc_settings.DATASTORE, '')
             self.assertEqual(ogc_settings.credentials, ('admin', 'geoserver'))
             self.assertTrue(ogc_settings.MAPFISH_PRINT_ENABLED)
             self.assertTrue(ogc_settings.PRINT_NG_ENABLED)
@@ -967,8 +858,8 @@ class UtilsTests(GeoNodeBaseTestSupport):
         defaults = self.OGC_DEFAULT_SETTINGS.get('default')
         ogc_settings = OGC_Servers_Handler(OGC_SERVER)['default']
         self.assertEqual(ogc_settings.server, defaults)
-        self.assertEqual(ogc_settings.rest, defaults['LOCATION'] + 'rest')
-        self.assertEqual(ogc_settings.ows, defaults['LOCATION'] + 'ows')
+        self.assertEqual(ogc_settings.rest, f"{defaults['LOCATION']}rest")
+        self.assertEqual(ogc_settings.ows, f"{defaults['LOCATION']}ows")
 
         # Make sure we get None vs a KeyError when the key does not exist
         self.assertIsNone(ogc_settings.SFDSDFDSF)
@@ -1045,19 +936,21 @@ class UtilsTests(GeoNodeBaseTestSupport):
 
         # Test OWS Download Links
         from geonode.geoserver.ows import wcs_links, wfs_links, wms_links
-        instance = Layer.objects.all()[0]
+        instance = create_single_dataset("san_andres_y_providencia_water")
+        instance.name = 'san_andres_y_providencia_water'
+        instance.save()
         bbox = instance.bbox
         srid = instance.srid
         height = 512
         width = 512
 
         # Default Style (expect exception since we are offline)
-        style = None
-        with self.assertRaises(GeoNodeException):
-            style = get_sld_for(gs_catalog, instance)
-        self.assertIsNone(style)
-        style = gs_catalog.get_style("line")
+        style = get_sld_for(gs_catalog, instance)
+        logger.error(f" style -------------------------------------------> {style}")
+        if isinstance(style, str):
+            style = gs_catalog.get_style(instance.name, workspace=instance.workspace)
         self.assertIsNotNone(style)
+        self.assertFalse(isinstance(style, str))
         instance.default_style, _ = Style.objects.get_or_create(
             name=style.name,
             defaults=dict(
@@ -1069,7 +962,7 @@ class UtilsTests(GeoNodeBaseTestSupport):
         self.assertIsNotNone(instance.default_style.name)
 
         # WMS Links
-        wms_links = wms_links(ogc_settings.public_url + 'wms?',
+        wms_links = wms_links(f"{ogc_settings.public_url}wms?",
                               instance.alternate,
                               bbox,
                               srid,
@@ -1080,13 +973,13 @@ class UtilsTests(GeoNodeBaseTestSupport):
         wms_url = urljoin(ogc_settings.PUBLIC_LOCATION, 'wms')
         identifier = urlencode({'layers': instance.alternate})
         for _link in wms_links:
-            logger.debug('%s --> %s' % (wms_url, _link[3]))
+            logger.debug(f'{wms_url} --> {_link[3]}')
             self.assertTrue(wms_url in _link[3])
-            logger.debug('%s --> %s' % (identifier, _link[3]))
+            logger.debug(f'{identifier} --> {_link[3]}')
             self.assertTrue(identifier in _link[3])
 
         # WFS Links
-        wfs_links = wfs_links(ogc_settings.public_url + 'wfs?',
+        wfs_links = wfs_links(f"{ogc_settings.public_url}wfs?",
                               instance.alternate,
                               bbox,
                               srid)
@@ -1095,13 +988,13 @@ class UtilsTests(GeoNodeBaseTestSupport):
         wfs_url = urljoin(ogc_settings.PUBLIC_LOCATION, 'wfs')
         identifier = urlencode({'typename': instance.alternate})
         for _link in wfs_links:
-            logger.debug('%s --> %s' % (wfs_url, _link[3]))
+            logger.debug(f'{wfs_url} --> {_link[3]}')
             self.assertTrue(wfs_url in _link[3])
-            logger.debug('%s --> %s' % (identifier, _link[3]))
+            logger.debug(f'{identifier} --> {_link[3]}')
             self.assertTrue(identifier in _link[3])
 
         # WCS Links
-        wcs_links = wcs_links(ogc_settings.public_url + 'wcs?',
+        wcs_links = wcs_links(f"{ogc_settings.public_url}wcs?",
                               instance.alternate,
                               bbox,
                               srid)
@@ -1110,37 +1003,10 @@ class UtilsTests(GeoNodeBaseTestSupport):
         wcs_url = urljoin(ogc_settings.PUBLIC_LOCATION, 'wcs')
         identifier = urlencode({'coverageid': instance.alternate.replace(':', '__', 1)})
         for _link in wcs_links:
-            logger.debug('%s --> %s' % (wcs_url, _link[3]))
+            logger.debug(f'{wcs_url} --> {_link[3]}')
             self.assertTrue(wcs_url in _link[3])
-            logger.debug('%s --> %s' % (identifier, _link[3]))
+            logger.debug(f'{identifier} --> {_link[3]}')
             self.assertTrue(identifier in _link[3])
-
-        # Thumbnails Generation Default
-        create_gs_thumbnail(instance, overwrite=True)
-        self.assertIsNotNone(instance.get_thumbnail_url())
-
-        # Thumbnails Generation Through "remote url"
-        create_gs_thumbnail_geonode(instance, overwrite=True, check_bbox=True)
-
-        # Thumbnails Generation Through "image"
-        request_body = {
-            'width': width,
-            'height': height,
-            'layers': instance.alternate
-        }
-        if hasattr(instance, 'default_style'):
-            if instance.default_style:
-                request_body['styles'] = instance.default_style.name
-        self.assertIsNotNone(request_body['styles'])
-
-        try:
-            image = _prepare_thumbnail_body_from_opts(request_body)
-        except Exception as e:
-            logger.exception(e)
-            image = None
-        # We are offline here, the layer does not exists in GeoServer
-        # - we expect the image is None
-        self.assertIsNone(image)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_importer_configuration(self):
@@ -1173,9 +1039,6 @@ class UtilsTests(GeoNodeBaseTestSupport):
         with self.settings(UPLOADER=uploader_settings, OGC_SERVER=ogc_server_settings, DATABASES=database_settings):
             OGC_Servers_Handler(ogc_server_settings)['default']
 
-
-class SignalsTests(GeoNodeLiveTestSupport):
-
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_set_resources_links(self):
 
@@ -1183,7 +1046,7 @@ class SignalsTests(GeoNodeLiveTestSupport):
         from geonode.base.models import Link
         from geonode.catalogue import get_catalogue
 
-        with self.settings(UPDATE_RESOURCE_LINKS_AT_MIGRATE=True):
+        with self.settings(UPDATE_RESOURCE_LINKS_AT_MIGRATE=True, ASYNC_SIGNALS=False):
             # Links
             _def_link_types = ['original', 'metadata']
             _links = Link.objects.filter(link_type__in=_def_link_types)
@@ -1192,35 +1055,32 @@ class SignalsTests(GeoNodeLiveTestSupport):
                 _links,
                 "No 'original' and 'metadata' links have been found"
             )
-            self.assertTrue(
-                _links.count() > 0,
-                "No 'original' and 'metadata' links have been found"
-            )
+
             # Delete all 'original' and 'metadata' links
             _links.delete()
             self.assertFalse(_links.count() > 0, "No links have been deleted")
             # Delete resources metadata
-            _layers = Layer.objects.exclude(
+            _datasets = Dataset.objects.exclude(
                 Q(metadata_xml__isnull=True) |
                 Q(metadata_xml__exact='') |
                 Q(csw_anytext__isnull=True) |
                 Q(csw_anytext__exact='')
             )
-            count = _layers.count()
-            self.assertTrue(count > 0, "No layers have got metadata")
+            count = _datasets.count()
             if count:
-                _layers.update(metadata_xml=None)
-                _updated_layers = Layer.objects.exclude(
+                _datasets.update(metadata_xml=None)
+                _updated_datasets = Dataset.objects.exclude(
                     Q(metadata_xml__isnull=True) |
                     Q(metadata_xml__exact='') |
                     Q(csw_anytext__isnull=True) |
                     Q(csw_anytext__exact='')
                 )
-                updated_count = _updated_layers.count()
+                updated_count = _updated_datasets.count()
                 self.assertTrue(
                     updated_count == 0,
                     "Metadata have not been updated (deleted) correctly"
                 )
+
             # Call migrate
             call_command("migrate", verbosity=0)
             # Check links
@@ -1230,23 +1090,14 @@ class SignalsTests(GeoNodeLiveTestSupport):
                 "No links have been restored"
             )
             # Check layers
-            _post_migrate_layers = Layer.objects.exclude(
+            _post_migrate_datasets = Dataset.objects.exclude(
                 Q(metadata_xml__isnull=True) |
                 Q(metadata_xml__exact='') |
                 Q(csw_anytext__isnull=True) |
                 Q(csw_anytext__exact='')
             )
 
-            post_migrate_layers_count = _post_migrate_layers.count()
-            self.assertTrue(
-                post_migrate_layers_count > 0,
-                "After migrations, there are no layers with metadata"
-            )
-            self.assertTrue(
-                post_migrate_layers_count >= count,
-                "After migrations, some metadata have not been restored correctly"
-            )
-            for _lyr in _post_migrate_layers:
+            for _lyr in _post_migrate_datasets:
                 # Check original links in csw_anytext
                 _post_migrate_links_orig = Link.objects.filter(
                     resource=_lyr.resourcebase_ptr,
@@ -1255,18 +1106,14 @@ class SignalsTests(GeoNodeLiveTestSupport):
                 )
                 self.assertTrue(
                     _post_migrate_links_orig.count() > 0,
-                    "No 'original' links has been found for the layer '{}'".format(
-                        _lyr.alternate
-                    )
+                    f"No 'original' links has been found for the layer '{_lyr.alternate}'"
                 )
                 for _link_orig in _post_migrate_links_orig:
                     self.assertIn(
                         _link_orig.url,
                         _lyr.csw_anytext,
-                        "The link URL {0} is not present in the 'csw_anytext' attribute of the layer '{1}'".format(
-                            _link_orig.url,
-                            _lyr.alternate
-                        )
+                        f"The link URL {_link_orig.url} is not present in the 'csw_anytext' \
+attribute of the layer '{_lyr.alternate}'"
                     )
                 # Check catalogue
                 catalogue = get_catalogue()
@@ -1274,9 +1121,7 @@ class SignalsTests(GeoNodeLiveTestSupport):
                 self.assertIsNotNone(record)
                 self.assertTrue(
                     hasattr(record, 'links'),
-                    "No records have been found in the catalogue for the resource '{}'".format(
-                        _lyr.alternate
-                    )
+                    f"No records have been found in the catalogue for the resource '{_lyr.alternate}'"
                 )
                 # Check 'metadata' links for each record
                 for mime, name, metadata_url in record.links['metadata']:
@@ -1293,8 +1138,5 @@ class SignalsTests(GeoNodeLiveTestSupport):
                         _post_migrate_link_meta = None
                     self.assertIsNotNone(
                         _post_migrate_link_meta,
-                        "No '{}' links have been found in the catalogue for the resource '{}'".format(
-                            name,
-                            _lyr.alternate
-                        )
+                        f"No '{name}' links have been found in the catalogue for the resource '{_lyr.alternate}'"
                     )

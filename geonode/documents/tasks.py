@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,83 +16,128 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 import os
-from os import access, R_OK
-from os.path import isfile
 
-from geonode.celery_app import app
 from celery.utils.log import get_task_logger
 
-from geonode.documents.models import Document
-from geonode.documents.renderers import render_document
-from geonode.documents.renderers import generate_thumbnail_content
-from geonode.documents.renderers import ConversionError
-from geonode.documents.renderers import MissingPILError
+from geonode.celery_app import app
+from geonode.storage.manager import storage_manager
+
+from .models import Document
+from .renderers import (
+    render_document,
+    generate_thumbnail_content,
+    ConversionError)
 
 logger = get_task_logger(__name__)
 
 
-@app.task(bind=True, queue='update')
+@app.task(
+    bind=True,
+    name='geonode.documents.tasks.create_document_thumbnail',
+    queue='geonode',
+    expires=600,
+    acks_late=False,
+    autoretry_for=(Exception, ),
+    retry_kwargs={'max_retries': 2, 'countdown': 10},
+    retry_backoff=True,
+    retry_backoff_max=700,
+    retry_jitter=True)
 def create_document_thumbnail(self, object_id):
     """
     Create thumbnail for a document.
     """
-    logger.debug("Generating thumbnail for document #{}.".format(object_id))
+    logger.debug(f"Generating thumbnail for document #{object_id}.")
 
     try:
         document = Document.objects.get(id=object_id)
     except Document.DoesNotExist:
-        logger.error("Document #{} does not exist.".format(object_id))
-        return
+        logger.error(f"Document #{object_id} does not exist.")
+        raise
 
     image_path = None
+    image_file = None
 
-    if document.is_image():
-        image_path = document.doc_file.path
-    elif document.is_file():
+    if document.is_image:
+        dname = storage_manager.path(document.files[0])
+        if storage_manager.exists(dname):
+            image_file = storage_manager.open(dname, 'rb')
+    elif document.is_video or document.is_audio:
+        image_file = open(document.find_placeholder(), 'rb')
+    elif document.is_file:
+        dname = storage_manager.path(document.files[0])
         try:
-            image_file = render_document(document.doc_file.path)
-            image_path = image_file.name
+            document_location = storage_manager.path(dname)
+        except NotImplementedError as e:
+            logger.debug(e)
+
+            document_location = storage_manager.url(dname)
+
+        try:
+            image_path = render_document(document_location)
+            if image_path is not None:
+                try:
+                    image_file = open(image_path, 'rb')
+                except Exception as e:
+                    logger.debug(f"Failed to render document #{object_id}: {e}")
+            else:
+                logger.debug(f"Failed to render document #{object_id}")
         except ConversionError as e:
-            logger.debug("Could not convert document #{}: {}."
-                         .format(object_id, e))
-
-    try:
-        if image_path:
-            assert isfile(image_path) and access(image_path, R_OK) and os.stat(image_path).st_size > 0
-    except (AssertionError, TypeError):
-        image_path = None
-
-    if not image_path:
-        image_path = document.find_placeholder()
-
-    if not image_path or not os.path.exists(image_path):
-        logger.debug("Could not find placeholder for document #{}"
-                     .format(object_id))
-        return
+            logger.debug(f"Could not convert document #{object_id}: {e}.")
+        except NotImplementedError as e:
+            logger.debug(f"Failed to render document #{object_id}: {e}")
 
     thumbnail_content = None
     try:
-        thumbnail_content = generate_thumbnail_content(image_path)
-    except MissingPILError:
-        logger.error('Pillow not installed, could not generate thumbnail.')
+        try:
+            thumbnail_content = generate_thumbnail_content(image_file)
+        except Exception as e:
+            logger.debug(f"Could not generate thumbnail, falling back to 'placeholder': {e}")
+            thumbnail_content = generate_thumbnail_content(document.find_placeholder())
+    except Exception as e:
+        logger.error(f"Could not generate thumbnail: {e}")
         return
+    finally:
+        if image_file is not None:
+            image_file.close()
+
+        if image_path is not None:
+            os.remove(image_path)
 
     if not thumbnail_content:
-        logger.warning("Thumbnail for document #{} empty.".format(object_id))
-    filename = 'document-{}-thumb.png'.format(document.uuid)
+        logger.warning(f"Thumbnail for document #{object_id} empty.")
+    filename = f'document-{document.uuid}-thumb.png'
     document.save_thumbnail(filename, thumbnail_content)
-    logger.debug("Thumbnail for document #{} created.".format(object_id))
+    logger.debug(f"Thumbnail for document #{object_id} created.")
 
 
-@app.task(bind=True, queue='cleanup')
+@app.task(
+    bind=True,
+    name='geonode.documents.tasks.delete_orphaned_document_files',
+    queue='cleanup',
+    expires=600,
+    acks_late=False,
+    autoretry_for=(Exception, ),
+    retry_kwargs={'max_retries': 2, 'countdown': 10},
+    retry_backoff=True,
+    retry_backoff_max=700,
+    retry_jitter=True)
 def delete_orphaned_document_files(self):
     from geonode.documents.utils import delete_orphaned_document_files
     delete_orphaned_document_files()
 
 
-@app.task(bind=True, queue='cleanup')
+@app.task(
+    bind=True,
+    name='geonode.documents.tasks.delete_orphaned_thumbnails',
+    queue='cleanup',
+    expires=600,
+    acks_late=False,
+    autoretry_for=(Exception, ),
+    retry_kwargs={'max_retries': 2, 'countdown': 10},
+    retry_backoff=True,
+    retry_backoff_max=700,
+    retry_jitter=True)
 def delete_orphaned_thumbnails(self):
     from geonode.base.utils import delete_orphaned_thumbs
     delete_orphaned_thumbs()

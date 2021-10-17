@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2019 OSGeo
@@ -20,7 +19,7 @@
 
 from django.core.management.base import BaseCommand
 from argparse import RawTextHelpFormatter
-from geonode.layers.utils import set_layers_permissions
+from geonode.layers.utils import set_datasets_permissions
 
 
 class Command(BaseCommand):
@@ -43,7 +42,7 @@ class Command(BaseCommand):
     """
 
     def create_parser(self, *args, **kwargs):
-        parser = super(Command, self).create_parser(*args, **kwargs)
+        parser = super().create_parser(*args, **kwargs)
         parser.formatter_class = RawTextHelpFormatter
         return parser
 
@@ -105,7 +104,7 @@ class Command(BaseCommand):
         users_usernames = options.get('users')
         groups_names = options.get('groups')
         delete_flag = options.get('delete_flag')
-        set_layers_permissions(
+        set_datasets_permissions(
             permissions_name,
             resources_names,
             users_usernames,

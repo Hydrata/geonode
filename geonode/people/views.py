@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -33,14 +32,24 @@ from geonode.tasks.tasks import send_email
 from geonode.people.forms import ProfileForm
 from geonode.base.auth import get_or_create_token
 from geonode.people.forms import ForgotUsernameForm
+from geonode.base.views import user_and_group_permission
+from django.views import View
 
 from dal import autocomplete
+
+
+class SetUserLayerPermission(View):
+    def get(self, request):
+        return user_and_group_permission(request, 'profile')
+
+    def post(self, request):
+        return user_and_group_permission(request, 'profile')
 
 
 class CustomSignupView(SignupView):
 
     def get_context_data(self, **kwargs):
-        ret = super(CustomSignupView, self).get_context_data(**kwargs)
+        ret = super().get_context_data(**kwargs)
         ret.update({'account_geonode_local_signup': settings.SOCIALACCOUNT_WITH_GEONODE_LOCAL_SINGUP})
         return ret
 
@@ -61,7 +70,7 @@ def profile_edit(request, username=None):
             form = ProfileForm(request.POST, request.FILES, instance=profile)
             if form.is_valid():
                 form.save()
-                messages.success(request, ("Profile %s updated." % username))
+                messages.success(request, (f"Profile {username} updated."))
                 return redirect(
                     reverse(
                         'profile_detail',
@@ -107,7 +116,7 @@ def forgot_username(request):
 
     site = Site.objects.get_current()
 
-    email_subject = _("Your username for " + site.name)
+    email_subject = _(f"Your username for {site.name}")
 
     if request.method == 'POST':
         username_form = ForgotUsernameForm(request.POST)
@@ -118,7 +127,7 @@ def forgot_username(request):
 
             if users:
                 username = users[0].username
-                email_message = email_subject + " : " + username
+                email_message = f"{email_subject} : {username}"
                 send_email(email_subject, email_message, settings.DEFAULT_FROM_EMAIL,
                            [username_form.cleaned_data['email']], fail_silently=False)
                 message = _("Your username has been emailed to you.")

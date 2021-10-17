@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -26,10 +25,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from geonode.maps.models import MapLayer
-        from geonode.layers.models import Layer
+        from geonode.layers.models import Dataset
 
-        map_layers = MapLayer.objects.filter(local=True)
-        for maplayer in map_layers:
-            if not Layer.objects.filter(alternate=maplayer.name).exists():
-                print('Removing broken map layer {}'.format(maplayer.name))
+        map_datasets = MapLayer.objects.filter(local=True)
+        for maplayer in map_datasets:
+            if not Dataset.objects.filter(alternate=maplayer.name).exists():
+                print(f'Removing broken map layer {maplayer.name}')
                 maplayer.delete()

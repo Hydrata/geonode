@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,18 +16,20 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-import requests
+import json
 import uuid
 import logging
-import json
+import requests
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.gis.geos import Polygon
 from django.template.defaultfilters import slugify
 
 from geonode import GeoNodeException
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.layers.utils import get_valid_name
+from geonode.resource.manager import resource_manager
 from geonode.geoserver.helpers import (
     gs_catalog,
     ogc_server_settings,
@@ -37,11 +38,11 @@ from geonode.geoserver.helpers import (
 
 logger = logging.getLogger(__name__)
 
-BBOX = [-180, 180, -90, 90]
+BBOX = [-180, -90, 180, 90]
 DATA_QUALITY_MESSAGE = "Created with GeoNode"
 
 
-def create_layer(name, title, owner_name, geometry_type, attributes=None):
+def create_dataset(name, title, owner_name, geometry_type, attributes=None):
     """
     Create an empty layer in GeoServer and register it in GeoNode.
     """
@@ -53,33 +54,41 @@ def create_layer(name, title, owner_name, geometry_type, attributes=None):
     name = get_valid_name(name)
     # we can proceed
     logger.debug('Creating the layer in GeoServer')
-    workspace, datastore = create_gs_layer(name, title, geometry_type, attributes)
+    workspace, datastore = create_gs_dataset(name, title, geometry_type, attributes)
     logger.debug('Creating the layer in GeoNode')
-    return create_gn_layer(workspace, datastore, name, title, owner_name)
+    return create_gn_dataset(workspace, datastore, name, title, owner_name)
 
 
-def create_gn_layer(workspace, datastore, name, title, owner_name):
+def create_gn_dataset(workspace, datastore, name, title, owner_name):
     """
     Associate a layer in GeoNode for a given layer in GeoServer.
     """
     owner = get_user_model().objects.get(username=owner_name)
 
-    layer = Layer.objects.create(
-        name=name,
-        workspace=workspace.name,
-        store=datastore.name,
-        storeType='dataStore',
-        alternate='%s:%s' % (workspace.name, name),
-        title=title,
-        owner=owner,
-        uuid=str(uuid.uuid4()),
-        bbox_x0=BBOX[0],
-        bbox_x1=BBOX[1],
-        bbox_y0=BBOX[2],
-        bbox_y1=BBOX[3],
-        data_quality_statement=DATA_QUALITY_MESSAGE,
-    )
-    return layer
+    layer = resource_manager.create(
+        str(uuid.uuid4()),
+        resource_type=Dataset,
+        defaults=dict(
+            name=name,
+            workspace=workspace.name,
+            store=datastore.name,
+            subtype='vector',
+            alternate=f'{workspace.name}:{name}',
+            title=title,
+            owner=owner,
+            srid='EPSG:4326',
+            bbox_polygon=Polygon.from_bbox(BBOX),
+            ll_bbox_polygon=Polygon.from_bbox(BBOX),
+            data_quality_statement=DATA_QUALITY_MESSAGE
+        ))
+
+    to_update = {}
+    if settings.ADMIN_MODERATE_UPLOADS:
+        to_update['is_approved'] = False
+    if settings.RESOURCE_PUBLISHING:
+        to_update['is_published'] = False
+
+    return resource_manager.update(layer.uuid, instance=layer, vals=to_update)
 
 
 def get_attributes(geometry_type, json_attrs=None):
@@ -111,7 +120,7 @@ def get_attributes(geometry_type, json_attrs=None):
     lattrs = []
     gattr = []
     gattr.append('the_geom')
-    gattr.append('com.vividsolutions.jts.geom.%s' % geometry_type)
+    gattr.append(f'com.vividsolutions.jts.geom.{geometry_type}')
     gattr.append({'nillable': False})
     lattrs.append(gattr)
     if json_attrs:
@@ -121,17 +130,17 @@ def get_attributes(geometry_type, json_attrs=None):
             attr_name = slugify(jattr[0])
             attr_type = jattr[1].lower()
             if len(attr_name) == 0:
-                msg = 'You must provide an attribute name for attribute of type %s' % (attr_type)
+                msg = f'You must provide an attribute name for attribute of type {attr_type}'
                 logger.error(msg)
                 raise GeoNodeException(msg)
             if attr_type not in ('float', 'date', 'string', 'integer'):
-                msg = '%s is not a valid type for attribute %s' % (attr_type, attr_name)
+                msg = f'{attr_type} is not a valid type for attribute {attr_name}'
                 logger.error(msg)
                 raise GeoNodeException(msg)
             if attr_type == 'date':
-                attr_type = 'java.util.%s' % attr_type[:1].upper() + attr_type[1:]
+                attr_type = f'java.util.{(attr_type[:1].upper() + attr_type[1:])}'
             else:
-                attr_type = 'java.lang.%s' % attr_type[:1].upper() + attr_type[1:]
+                attr_type = f'java.lang.{(attr_type[:1].upper() + attr_type[1:])}'
             lattr.append(attr_name)
             lattr.append(attr_type)
             lattr.append({'nillable': True})
@@ -148,7 +157,7 @@ def get_or_create_datastore(cat, workspace=None, charset="UTF-8"):
     return ds
 
 
-def create_gs_layer(name, title, geometry_type, attributes=None):
+def create_gs_dataset(name, title, geometry_type, attributes=None):
     """
     Create an empty PostGIS layer in GeoServer with a given name, title,
     geometry_type and attributes.
@@ -173,7 +182,7 @@ def create_gs_layer(name, title, geometry_type, attributes=None):
     resources = datastore.get_resources()
     for resource in resources:
         if resource.name == name:
-            msg = "There is already a layer named %s in %s" % (name, workspace)
+            msg = f"There is already a layer named {name} in {workspace}"
             logger.error(msg)
             raise GeoNodeException(msg)
 
@@ -182,36 +191,35 @@ def create_gs_layer(name, title, geometry_type, attributes=None):
     for spec in attributes:
         att_name, binding, opts = spec
         nillable = opts.get("nillable", False)
-        attributes_block += ("<attribute>"
-                             "<name>{name}</name>"
-                             "<binding>{binding}</binding>"
-                             "<nillable>{nillable}</nillable>"
-                             "</attribute>").format(name=att_name, binding=binding, nillable=nillable)
+        attributes_block += (
+            "<attribute>"
+            f"<name>{att_name}</name>"
+            f"<binding>{binding}</binding>"
+            f"<nillable>{nillable}</nillable>"
+            "</attribute>")
     attributes_block += "</attributes>"
 
     # TODO implement others srs and not only EPSG:4326
-    xml = ("<featureType>"
-           "<name>{name}</name>"
-           "<nativeName>{native_name}</nativeName>"
-           "<title>{title}</title>"
-           "<srs>EPSG:4326</srs>"
-           "<latLonBoundingBox><minx>{minx}</minx><maxx>{maxx}</maxx><miny>{miny}</miny><maxy>{maxy}</maxy>"
-           "<crs>EPSG:4326</crs></latLonBoundingBox>"
-           "{attributes}"
-           "</featureType>").format(
-        name=name, native_name=native_name,
-        title=title,
-        minx=BBOX[0], maxx=BBOX[1], miny=BBOX[2], maxy=BBOX[3],
-        attributes=attributes_block)
+    xml = (
+        "<featureType>"
+        f"<name>{name}</name>"
+        f"<nativeName>{native_name}</nativeName>"
+        f"<title>{title}</title>"
+        "<srs>EPSG:4326</srs>"
+        f"<latLonBoundingBox><minx>{BBOX[0]}</minx><maxx>{BBOX[2]}</maxx><miny>{BBOX[1]}</miny><maxy>{BBOX[3]}</maxy>"
+        f"<crs>EPSG:4326</crs></latLonBoundingBox>"
+        f"{attributes_block}"
+        "</featureType>")
 
-    url = ('%s/workspaces/%s/datastores/%s/featuretypes'
-           % (ogc_server_settings.rest, workspace.name, datastore.name))
+    url = (
+        f'{ogc_server_settings.rest}/workspaces/{workspace.name}/datastores/{datastore.name}/featuretypes'
+    )
     headers = {'Content-Type': 'application/xml'}
     _user, _password = ogc_server_settings.credentials
     req = requests.post(url, data=xml, headers=headers, auth=(_user, _password))
     if req.status_code != 201:
-        logger.error('Request status code was: %s' % req.status_code)
-        logger.error('Response was: %s' % req.text)
-        raise Exception("Layer could not be created in GeoServer {}".format(req.text))
+        logger.error(f'Request status code was: {req.status_code}')
+        logger.error(f'Response was: {req.text}')
+        raise Exception(f"Dataset could not be created in GeoServer {req.text}")
 
     return workspace, datastore

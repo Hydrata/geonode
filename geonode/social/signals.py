@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -28,12 +27,11 @@ from dialogos.models import Comment
 
 from django.conf import settings
 from django.db.models import signals
-from django.urls import reverse
 from django.utils.translation import ugettext_lazy as _
 
 # from actstream.exceptions import ModelNotActionable
 
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.maps.models import Map
 from geonode.documents.models import Document
 from geonode.notifications_helper import (send_notification, queue_notification,
@@ -53,14 +51,14 @@ if "relationships" in settings.INSTALLED_APPS:
     from relationships.models import Relationship
 
 ratings = None
-if "ratings" in settings.INSTALLED_APPS:
+if "pinax.ratings" in settings.INSTALLED_APPS:
     ratings = True
     from pinax.ratings.models import Rating
 
 
 def activity_post_modify_object(sender, instance, created=None, **kwargs):
     """
-    Creates new activities after a Map, Layer, or Comment is  created/updated/deleted.
+    Creates new activities after a Map, Dataset, Document, or Comment is  created/updated/deleted.
 
     action_settings:
     actor: the user who performed the activity
@@ -80,6 +78,7 @@ def activity_post_modify_object(sender, instance, created=None, **kwargs):
                                                action_object=instance,
                                                created_verb=_('created'),
                                                deleted_verb=_('deleted'),
+                                               obj_type=obj_type,
                                                object_name=getattr(instance, 'name', None),
                                                target=None,
                                                updated_verb=_('updated'),
@@ -100,7 +99,7 @@ def activity_post_modify_object(sender, instance, created=None, **kwargs):
         logger.exception(e)
 
     try:
-        action_settings['layer'].update(created_verb=_('uploaded'))
+        action_settings['dataset'].update(created_verb=_('uploaded'))
     except Exception as e:
         logger.exception(e)
 
@@ -115,11 +114,12 @@ def activity_post_modify_object(sender, instance, created=None, **kwargs):
             # object was created
             verb = action.get('created_verb')
             raw_action = 'created'
-
         else:
             if created is False:
                 # object was saved.
-                if not isinstance(instance, Layer) and not isinstance(instance, Map):
+                if not isinstance(instance, Dataset) and \
+                        not isinstance(instance, Document) and \
+                        not isinstance(instance, Map):
                     verb = action.get('updated_verb')
                     raw_action = 'updated'
 
@@ -135,15 +135,14 @@ def activity_post_modify_object(sender, instance, created=None, **kwargs):
     if verb:
         try:
             activity.send(action.get('actor'),
-                          verb="{verb}".format(verb=verb),
+                          verb=str(verb),
                           action_object=action.get('action_object'),
                           target=action.get('target', None),
                           object_name=action.get('object_name'),
-                          raw_action=raw_action,
-                          )
+                          raw_action=raw_action)
         # except ModelNotActionable:
         except Exception:
-            logger.debug('The activity received a non-actionable Model or None as the actor/action.')
+            logger.warning('The activity received a non-actionable Model or None as the actor/action.')
 
 
 def relationship_post_save_actstream(instance, sender, created, **kwargs):
@@ -160,8 +159,9 @@ def relationship_post_save(instance, sender, created, **kwargs):
 
 if activity:
     signals.post_save.connect(activity_post_modify_object, sender=Comment)
-    signals.post_save.connect(activity_post_modify_object, sender=Layer)
-    signals.post_delete.connect(activity_post_modify_object, sender=Layer)
+
+    signals.post_save.connect(activity_post_modify_object, sender=Dataset)
+    signals.post_delete.connect(activity_post_modify_object, sender=Dataset)
 
     signals.post_save.connect(activity_post_modify_object, sender=Map)
     signals.post_delete.connect(activity_post_modify_object, sender=Map)
@@ -173,22 +173,26 @@ if activity:
 def rating_post_save(instance, sender, created, **kwargs):
     """ Send a notification when rating a layer, map or document
     """
-    notice_type_label = '%s_rated' % instance.content_object.class_name.lower()
-    recipients = get_notification_recipients(notice_type_label, instance.user)
-    send_notification(recipients, notice_type_label, {"instance": instance})
+    notice_type_label = f'{instance.content_object.class_name.lower()}_rated'
+    recipients = get_notification_recipients(notice_type_label,
+                                             instance.user,
+                                             resource=instance.content_object)
+    send_notification(recipients,
+                      notice_type_label,
+                      {'resource': instance.content_object, 'user': instance.user, 'rating': instance.rating})
 
 
 def comment_post_save(instance, sender, created, **kwargs):
     """ Send a notification when a comment to a layer, map or document has
     been submitted
     """
-    notice_type_label = '%s_comment' % instance.content_type.model.lower()
-    recipients = get_comment_notification_recipients(notice_type_label, instance.content_object.owner)
+    notice_type_label = f'{instance.content_type.model.lower()}_comment'
+    recipients = get_comment_notification_recipients(notice_type_label,
+                                                     instance.author,
+                                                     resource=instance.content_object)
     send_notification(recipients,
                       notice_type_label,
-                      extra_context={
-                          "instance": instance, 'notice_settings_url': reverse('pinax_notifications:notice_settings')
-                      })
+                      {'resource': instance.content_object, 'author': instance.author})
 
 
 # signals

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -54,6 +53,15 @@ class DocumentAdmin(TabbedTranslationAdmin):
     date_hierarchy = 'date'
     form = DocumentAdminForm
     actions = [metadata_batch_edit]
+
+    def delete_queryset(self, request, queryset):
+        """
+        We need to invoke the 'ResourceBase.delete' method even when deleting
+        through the admin batch action
+        """
+        for obj in queryset:
+            from geonode.resource.manager import resource_manager
+            resource_manager.delete(obj.uuid, instance=obj)
 
 
 admin.site.register(Document, DocumentAdmin)

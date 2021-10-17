@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2020 OSGeo
@@ -17,13 +16,22 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 from celery import shared_task
 from django.core.management import call_command
 
 
-@shared_task
-def collect_metrics():
+@shared_task(
+    bind=True,
+    name='geonode.monitoring.tasks.collect_metrics',
+    queue='geoserver.events',
+    expires=600,
+    acks_late=False,
+    autoretry_for=(Exception, ),
+    retry_kwargs={'max_retries': 1, 'countdown': 10},
+    retry_backoff=True,
+    retry_backoff_max=700,
+    retry_jitter=True)
+def collect_metrics(self):
     """
     Collect metrics events data
     """

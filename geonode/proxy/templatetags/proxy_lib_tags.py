@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2019 OSGeo
@@ -18,56 +17,49 @@
 #
 #########################################################################
 
+from geonode.base.models import ResourceBase
 import traceback
 
 from django import template
 from django.conf import settings
 from django.urls import reverse
 from django.utils.translation import ugettext as _
-from django.core.files.storage import FileSystemStorage
+from geonode.storage.manager import storage_manager
 
 from urllib.parse import urlsplit, urljoin
 
 from geonode.utils import resolve_object
-from geonode.layers.models import Layer, LayerFile
 
 register = template.Library()
-
-storage = FileSystemStorage()
 
 
 @register.simple_tag(takes_context=True)
 def original_link_available(context, resourceid, url):
-
     _not_permitted = _("You are not permitted to save or edit this resource.")
-
     request = context['request']
-    instance = resolve_object(request,
-                              Layer,
-                              {'pk': resourceid},
-                              permission='base.download_resourcebase',
-                              permission_msg=_not_permitted)
+    instance = resolve_object(
+        request,
+        ResourceBase,
+        {'pk': resourceid},
+        permission='base.download_resourcebase',
+        permission_msg=_not_permitted)
 
     download_url = urljoin(settings.SITEURL, reverse("download", args={resourceid}))
     if urlsplit(url).netloc != urlsplit(download_url).netloc or \
-    urlsplit(url).path != urlsplit(download_url).path:
+            urlsplit(url).path != urlsplit(download_url).path:
         return True
 
-    layer_files = []
-    if isinstance(instance, Layer):
+    dataset_files = []
+    if isinstance(instance, ResourceBase):
         try:
-            upload_session = instance.get_upload_session()
-            if upload_session:
-                layer_files = [
-                    item for idx, item in enumerate(LayerFile.objects.filter(upload_session=upload_session))]
-                if layer_files:
-                    for lyr in layer_files:
-                        if not storage.exists(str(lyr.file)):
-                            return False
+            for file in instance.files:
+                dataset_files.append(file)
+                if not storage_manager.exists(file):
+                    return False
         except Exception:
             traceback.print_exc()
             return False
-    if layer_files:
+    if dataset_files:
         return True
     else:
         return False

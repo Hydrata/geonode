@@ -1,18 +1,23 @@
 {% load i18n %}
 <div class="row" ng-controller="CartList">
   <div class="col-md-3">
-    <resource-cart data-facet-type="{{ facet_type }}" selectedString='{% trans "Selection" %}' emptyString="{% trans "No list items selected. Use the selection fields to add." %}" ></resource-cart>
+
+    {% if facet_type == 'datasets' %}
+    <resource-cart data-facet-type="{{ facet_type }}" selectedString='{% trans "Selection" %}' emptyString="{% trans "No list items selected. Use the selection fields to add." %}" >
+    </resource-cart>
+    {% endif %}
     <div class="row">
       <div class="col-xs-12">
-        {% block bulk_perms_button %}
-        <div class="btn-group btn-group-justified" role="group" aria-label="tools">
-          {% if facet_type == 'layers' %}
-          <div class="btn-group" role="group">
-            <button type="button" class="btn btn-default" ng-disabled="!cart.getCart().items.length" ng-click="newMap()">{% trans "Create a Map" %}</button>
+
+        {% if user.is_authenticated and facet_type == 'datasets' %}
+          {% block bulk_perms_button %}
+          <div class="btn-group btn-group-justified" role="group" aria-label="tools">
+            <div class="btn-group" role="group">
+              <button type="button" class="btn btn-default" ng-disabled="!cart.getCart().items.length" ng-click="newMap()">{% trans "Create a Map" %}</button>
+            </div>
           </div>
-          {% endif %}
-        </div>
-        {% endblock %}
+          {% endblock %}
+        {% endif %}
 
         <div class="selections">
             {% trans "Filters" %}
@@ -22,6 +27,7 @@
               {% include "search/_text_filter.html" %}
             {% endif  %}
         <div id="slide-pane">
+          {% block search_facet_lists %}
             {% if SEARCH_FILTERS.H_KEYWORDS_ENABLED %}
               {% include "search/_h_keywords_filter.html" %}
             {% endif %}
@@ -38,6 +44,7 @@
             {% if SEARCH_FILTERS.EXTENT_ENABLED %}
               {% include "search/_extent_filter.html" %}
             {% endif %}
+          {% endblock search_facet_lists %}
         </div>
       </div>
     </div>
@@ -45,14 +52,16 @@
   <div class="col-md-9">
     <div class="row">
       <div class="col-md-10">
-          {% if facet_type == 'layers' %}
-          <span style="font-size: 34px;" ng-bind="total_counts + ' ' + '{% trans "Layers found" %}'"></span>
+          {% if facet_type == 'datasets' %}
+          <span style="font-size: 34px;" ng-bind="total_counts + ' ' + '{% trans "Datasets found" %}'"></span>
           {% elif facet_type == 'maps' %}
           <span style="font-size: 34px;" ng-bind="total_counts + ' ' + '{% trans "Maps found" %}'"></span>
           {% elif facet_type == 'documents' %}
           <span style="font-size: 34px;" ng-bind="total_counts + ' ' + '{% trans "Documents found" %}'"></span>
+          {% elif facet_type == 'geoapps' %}
+          <span style="font-size: 34px;" ng-bind="total_counts + ' ' + '{% blocktrans %}{{GEONODE_APPS_NAME}}{% endblocktrans %} {% trans "found" %}'"></span>
           {% else %}
-          <span style="font-size: 34px;" ng-bind="total_counts + ' {{ facet_type | title }} found'"></span>
+          <span style="font-size: 34px;" ng-bind="total_counts + ' {{ facet_type | title }} {% trans "found" %}'"></span>
           {% endif %}
       </div>
       <div class="col-md-2">{% include "search/_sort_filters.html" %}</div>

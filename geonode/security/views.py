@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -19,9 +18,9 @@
 #########################################################################
 
 import json
+import logging
 import traceback
 
-from django.conf import settings
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
@@ -34,11 +33,12 @@ from geonode.base.models import (
     ResourceBase,
     UserGeoLimit,
     GroupGeoLimit)
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.groups.models import GroupProfile
 
-if "notification" in settings.INSTALLED_APPS:
-    from notification import models as notification
+from geonode.notifications_helper import send_notification
+
+logger = logging.getLogger(__name__)
 
 
 def _perms_info(obj):
@@ -51,6 +51,57 @@ def _perms_info_json(obj):
     info['users'] = {u.username: perms for u, perms in info['users'].items()}
     info['groups'] = {g.name: perms for g, perms in info['groups'].items()}
     return json.dumps(info)
+
+
+def resource_permisions_handle_get(request, resource):
+    permission_spec = _perms_info_json(resource)
+    return HttpResponse(
+        json.dumps({'success': True, 'permissions': permission_spec}),
+        status=200,
+        content_type='text/plain'
+    )
+
+
+def resource_permissions_handle_post(request, resource):
+    success = True
+    message = _("Permissions successfully updated!")
+    try:
+        permission_spec = json.loads(request.body.decode('UTF-8'))
+        resource.set_permissions(permission_spec)
+
+        # Check Users Permissions Consistency
+        view_any = False
+        info = _perms_info(resource)
+
+        for user, perms in info['users'].items():
+            if user.username == "AnonymousUser":
+                view_any = "view_resourcebase" in perms
+                break
+
+        for user, perms in info['users'].items():
+            if "download_resourcebase" in perms and \
+               "view_resourcebase" not in perms and \
+               not view_any:
+
+                success = False
+                message = _("User {username} has download permissions but cannot "
+                            "access the resource. Please update permission "
+                            "consistently!").format(username=user.username)
+
+        return HttpResponse(
+            json.dumps({'success': success, 'message': message}),
+            status=200,
+            content_type='text/plain'
+        )
+    except Exception as e:
+        logger.exception(e)
+        success = False
+        message = _("Error updating permissions :(")
+        return HttpResponse(
+            json.dumps({'success': success, 'message': message}),
+            status=500,
+            content_type='text/plain'
+        )
 
 
 def resource_permissions(request, resource_id):
@@ -67,55 +118,10 @@ def resource_permissions(request, resource_id):
             content_type='text/plain')
 
     if request.method == 'POST':
-        success = True
-        message = _("Permissions successfully updated!")
-        try:
-            permission_spec = json.loads(request.body.decode('UTF-8'))
-            resource.set_permissions(permission_spec)
-
-            # Check Users Permissions Consistency
-            view_any = False
-            info = _perms_info(resource)
-
-            for user, perms in info['users'].items():
-                if user.username == "AnonymousUser":
-                    view_any = "view_resourcebase" in perms
-                    break
-
-            for user, perms in info['users'].items():
-                if "download_resourcebase" in perms and \
-                   "view_resourcebase" not in perms and \
-                   not view_any:
-
-                    success = False
-                    message = "User {} has download permissions but cannot " \
-                              "access the resource. Please update permission " \
-                              "consistently!".format(user.username)
-
-            return HttpResponse(
-                json.dumps({'success': success, 'message': message}),
-                status=200,
-                content_type='text/plain'
-            )
-        except Exception:
-            # traceback.print_exc()
-            success = False
-            message = _("Error updating permissions :(")
-            return HttpResponse(
-                json.dumps({'success': success, 'message': message}),
-                status=500,
-                content_type='text/plain'
-            )
-
+        return resource_permissions_handle_post(request, resource)
     elif request.method == 'GET':
-        permission_spec = _perms_info_json(resource)
-        return HttpResponse(
-            json.dumps({'success': True, 'permissions': permission_spec}),
-            status=200,
-            content_type='text/plain'
-        )
+        return resource_permisions_handle_get(request, resource)
     else:
-        # traceback.print_exc()
         return HttpResponse(
             'No methods other than get and post are allowed',
             status=401,
@@ -182,7 +188,7 @@ def resource_geolimits(request, resource_id):
         elif group_id:
             if wkt:
                 geo_limit, _ = GroupGeoLimit.objects.update_or_create(
-                    group=GroupProfile.objects.get(id=group_id),
+                    group=GroupProfile.objects.get(group__id=group_id),
                     resource=resource
                 )
                 geo_limit.wkt = wkt
@@ -190,7 +196,7 @@ def resource_geolimits(request, resource_id):
                 resource.groups_geolimits.add(geo_limit)
             else:
                 geo_limits = GroupGeoLimit.objects.filter(
-                    group=GroupProfile.objects.get(id=group_id),
+                    group=GroupProfile.objects.get(group__id=group_id),
                     resource=resource
                 )
                 for geo_limit in geo_limits:
@@ -226,7 +232,7 @@ def resource_geolimits(request, resource_id):
         elif group_id:
             try:
                 geo_limits = GroupGeoLimit.objects.filter(
-                    group=GroupProfile.objects.get(id=group_id),
+                    group=GroupProfile.objects.get(group__id=group_id),
                     resource=resource
                 )
                 for geo_limit in geo_limits:
@@ -256,13 +262,13 @@ def resource_geolimits(request, resource_id):
                     content_type='text/plain')
             except Exception:
                 return HttpResponse(
-                    _('Could not fetch geometries from backend.'),
+                    'Could not fetch geometries from backend.',
                     status=400,
                     content_type='text/plain')
         elif group_id:
             try:
                 _geo_limit = GroupGeoLimit.objects.get(
-                    group=GroupProfile.objects.get(id=group_id),
+                    group=GroupProfile.objects.get(group__id=group_id),
                     resource=resource
                 ).wkt
                 return HttpResponse(
@@ -271,14 +277,14 @@ def resource_geolimits(request, resource_id):
                     content_type='text/plain')
             except Exception:
                 return HttpResponse(
-                    _('Could not fetch geometries from backend.'),
+                    'Could not fetch geometries from backend.',
                     status=400,
                     content_type='text/plain')
 
 
 @require_POST
 def invalidate_permissions_cache(request):
-    from .utils import sync_resources_with_guardian
+    from geonode.geoserver.security import sync_resources_with_guardian
     uuid = request.POST['uuid']
     resource = get_object_or_404(ResourceBase, uuid=uuid)
     can_change_permissions = request.user.has_perm(
@@ -309,11 +315,11 @@ def attributes_sats_refresh(request):
     can_change_data = request.user.has_perm(
         'change_resourcebase',
         resource)
-    layer = Layer.objects.get(id=resource.id)
+    layer = Dataset.objects.get(id=resource.id)
     if layer and can_change_data:
         try:
             # recalculate the layer statistics
-            set_attributes_from_geoserver(layer, overwrite=True)
+            set_attributes_from_geoserver(layer, overwrite=False)
             gs_resource = gs_catalog.get_resource(
                 name=layer.name,
                 store=layer.store,
@@ -330,24 +336,25 @@ def attributes_sats_refresh(request):
                     json.dumps(
                         {
                             'success': 'false',
-                            'message': 'Error trying to fetch the resource "%s" from GeoServer!' % layer.store
+                            'message': f'Error trying to fetch the resource "{layer.store}" from GeoServer!'
                         }),
                     status=302,
                     content_type='text/plain')
-            from decimal import Decimal
-            layer.bbox_x0 = Decimal(gs_resource.native_bbox[0])
-            layer.bbox_x1 = Decimal(gs_resource.native_bbox[1])
-            layer.bbox_y0 = Decimal(gs_resource.native_bbox[2])
-            layer.bbox_y1 = Decimal(gs_resource.native_bbox[3])
-            layer.srid = gs_resource.projection
+
+            bbox = gs_resource.native_bbox
+            layer.set_bbox_polygon(
+                [bbox[0], bbox[2], bbox[1], bbox[3]],
+                gs_resource.projection
+            )
             layer.save()
+
         except Exception as e:
             # traceback.print_exc()
             return HttpResponse(
                 json.dumps(
                     {
                         'success': 'false',
-                        'message': 'Exception occurred: "%s"' % str(e)
+                        'message': f'Exception occurred: "{str(e)}"'
                     }),
                 status=302,
                 content_type='text/plain')
@@ -365,16 +372,20 @@ def attributes_sats_refresh(request):
 
 
 @require_POST
-def invalidate_tiledlayer_cache(request):
-    from .utils import set_geowebcache_invalidate_cache
+def invalidate_tileddataset_cache(request):
+    from geonode.geoserver.security import set_geowebcache_invalidate_cache
     uuid = request.POST['uuid']
     resource = get_object_or_404(ResourceBase, uuid=uuid)
     can_change_data = request.user.has_perm(
         'change_resourcebase',
         resource)
-    layer = Layer.objects.get(id=resource.id)
+    layer = Dataset.objects.get(id=resource.id)
     if layer and can_change_data:
-        set_geowebcache_invalidate_cache(layer.alternate)
+        try:
+            set_geowebcache_invalidate_cache(layer.alternate or layer.typename)
+        except Exception:
+            tb = traceback.format_exc()
+            logger.debug(tb)
         return HttpResponse(
             json.dumps({'success': 'ok', 'message': _('GeoWebCache Tiled Layer Emptied!')}),
             status=200,
@@ -403,7 +414,15 @@ def set_bulk_permissions(request):
                     'base.change_resourcebase_permissions')
                 resource.set_permissions(permission_spec)
             except PermissionDenied:
-                not_permitted.append(ResourceBase.objects.get(id=resource_id).title)
+                try:
+                    resolve_object(
+                        request, ResourceBase, {
+                            'id': resource_id
+                        },
+                        'base.change_resourcebase')
+                    resource.set_permissions(permission_spec)
+                except PermissionDenied:
+                    not_permitted.append(ResourceBase.objects.get(id=resource_id).title)
 
         return HttpResponse(
             json.dumps({'success': 'ok', 'not_changed': not_permitted}),
@@ -424,11 +443,9 @@ def request_permissions(request):
     uuid = request.POST['uuid']
     resource = get_object_or_404(ResourceBase, uuid=uuid)
     try:
-        notification.send(
-            [resource.owner],
-            'request_download_resourcebase',
-            {'from_user': request.user, 'resource': resource}
-        )
+        send_notification([resource.owner],
+                          'request_download_resourcebase',
+                          {'resource': resource, 'from_user': request.user})
         return HttpResponse(
             json.dumps({'success': 'ok', }),
             status=200,
@@ -441,27 +458,25 @@ def request_permissions(request):
             content_type='text/plain')
 
 
-def send_email_consumer(layer_uuid, user_id):
-    resource = get_object_or_404(ResourceBase, uuid=layer_uuid)
+def send_email_consumer(dataset_uuid, user_id):
+    resource = get_object_or_404(ResourceBase, uuid=dataset_uuid)
     user = get_user_model().objects.get(id=user_id)
-    notification.send(
-        [resource.owner],
-        'request_download_resourcebase',
-        {'from_user': user, 'resource': resource}
-    )
+    send_notification([resource.owner],
+                      'request_download_resourcebase',
+                      {'resource': resource, 'from_user': user})
 
 
-def send_email_owner_on_view(owner, viewer, layer_id, geonode_email="email@geo.node"):
+def send_email_owner_on_view(owner, viewer, dataset_id, geonode_email="email@geo.node"):
     # get owner and viewer emails
     owner_email = get_user_model().objects.get(username=owner).email
-    layer = Layer.objects.get(id=layer_id)
+    layer = Dataset.objects.get(id=dataset_id)
     # check if those values are empty
     if owner_email and geonode_email:
         from django.core.mail import EmailMessage
         # TODO: Copy edit message.
-        subject_email = "Your Layer has been seen."
-        msg = ("Your layer called {0} with uuid={1}"
-               " was seen by {2}").format(layer.name, layer.uuid, viewer)
+        subject_email = "Your Dataset has been seen."
+        msg = (f"Your layer called {layer.name} with uuid={layer.uuid}"
+               f" was seen by {viewer}")
         try:
             email = EmailMessage(
                 subject=subject_email,

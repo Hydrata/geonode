@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -30,7 +29,8 @@ from geonode.monitoring.models import RequestEvent, ExceptionEvent
 log = logging.getLogger(__name__)
 
 
-class BaseServiceExpose(object):
+class BaseServiceExpose:
+
     NAME = None
 
     def __init__(self, *args, **kwargs):
@@ -89,7 +89,7 @@ class GeoNodeServiceExpose(BaseServiceExpose):
         return data
 
 
-class BaseServiceHandler(object):
+class BaseServiceHandler:
 
     def __init__(self, service, force_check=False):
         utc = pytz.utc
@@ -97,7 +97,6 @@ class BaseServiceHandler(object):
         self.now = datetime.utcnow().replace(tzinfo=utc)
         self.check_since = service.last_check.astimezone(utc) if service.last_check else self.now
         self.force_check = force_check
-        self.setup()
 
     def setup(self):
         pass
@@ -147,6 +146,9 @@ class BaseServiceHandler(object):
 
 class GeoNodeService(BaseServiceHandler):
 
+    def __init__(self, service, force_check=False):
+        BaseServiceHandler.__init__(self, service, force_check)
+
     def _get_collected_set(self, since=None, until=None):
         filter_kwargs = {'service': self.service}
         if since:
@@ -162,9 +164,13 @@ class GeoNodeService(BaseServiceHandler):
 
 class GeoServerService(BaseServiceHandler):
 
+    def __init__(self, service, force_check=False):
+        BaseServiceHandler.__init__(self, service, force_check)
+        self.setup()
+
     def setup(self):
         if not self.service.url:
-            raise ValueError("Monitoring is not configured to fetch from %s" % self.service.name)
+            raise ValueError(f"Monitoring is not configured to fetch from {self.service.name}")
         self.gs_monitor = GeoServerMonitorClient(self.service.url)
 
     def _collect(self, since, until, format=None, **kwargs):
@@ -184,14 +190,17 @@ class HostGeoServerService(BaseServiceHandler):
 
     PATH = '/rest/about/system-status.json'
 
+    def __init__(self, service, force_check=False):
+        BaseServiceHandler.__init__(self, service, force_check)
+
     def _collect(self, *args, **kwargs):
         base_url = self.service.url
         if not base_url:
-            raise ValueError("Service {} should have url provided".format(self.service.name))
-        url = '{}{}'.format(base_url.rstrip('/'), self.PATH)
+            raise ValueError(f"Service {self.service.name} should have url provided")
+        url = f"{base_url.rstrip('/')}{self.PATH}"
         rdata = requests.get(url, timeout=10, verify=False)
         if rdata.status_code != 200:
-            raise ValueError("Error response from api: ({}) {}".format(url, rdata))
+            raise ValueError(f"Error response from api: ({url}) {rdata}")
         data = rdata.json()['metrics']['metric']
         return data
 
@@ -201,14 +210,17 @@ class HostGeoServerService(BaseServiceHandler):
 
 class HostGeoNodeService(BaseServiceHandler):
 
+    def __init__(self, service, force_check=False):
+        BaseServiceHandler.__init__(self, service, force_check)
+
     def _collect(self, since, until, *args, **kwargs):
         base_url = self.service.url
         if not base_url:
-            raise ValueError("Service {} should have url provided".format(self.service.name))
-        url = '{}/monitoring/api/beacon/{}/'.format(base_url.rstrip('/'), self.service.service_type.name)
+            raise ValueError(f"Service {self.service.name} should have url provided")
+        url = f"{base_url.rstrip('/')}/monitoring/api/beacon/{self.service.service_type.name}/"
         rdata = requests.get(url, timeout=10, verify=False)
         if rdata.status_code != 200:
-            raise ValueError("Error response from api: ({}) {}".format(url, rdata))
+            raise ValueError(f"Error response from api: ({url}) {rdata}")
         data = rdata.json()
         return data
 
@@ -216,20 +228,20 @@ class HostGeoNodeService(BaseServiceHandler):
         return data
 
 
-services = dict(
-    (c.get_name(), c,)
+services = {
+    c.get_name(): c
     for c in (
         GeoNodeService,
         GeoServerService,
         HostGeoNodeService,
-        HostGeoServerService,))
+        HostGeoServerService,)}
 
 
 def get_for_service(sname):
     return services[sname]
 
 
-exposes = dict((c.get_name(), c) for c in (GeoNodeServiceExpose, HostGeoNodeServiceExpose,))
+exposes = {c.get_name(): c for c in (GeoNodeServiceExpose, HostGeoNodeServiceExpose,)}
 
 
 def exposes_for_service(sname):

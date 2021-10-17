@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,12 +17,16 @@
 #
 #########################################################################
 
+from django import forms
 from django.contrib import admin
 from django.conf import settings
-
+from django.shortcuts import redirect, render
+from django.urls import path
 from dal import autocomplete
 from taggit.forms import TagField
-from django import forms
+from django.core.management import call_command
+from slugify import slugify
+from django.contrib import messages
 
 from treebeard.admin import TreeAdmin
 from treebeard.forms import movenodeform_factory
@@ -44,17 +47,44 @@ from geonode.base.models import (
     MenuItem,
     CuratedThumbnail,
     Configuration,
+    Thesaurus, ThesaurusLabel, ThesaurusKeyword, ThesaurusKeywordLabel,
 )
-from django.http import HttpResponseRedirect
 
+from geonode.base.forms import (
+    BatchEditForm,
+    BatchPermissionsForm, ThesaurusImportForm,
+    UserAndGroupPermissionsForm
+)
 from geonode.base.widgets import TaggitSelect2Custom
 
 
 def metadata_batch_edit(modeladmin, request, queryset):
-    ids = ','.join([str(element.pk) for element in queryset])
+    ids = ','.join(str(element.pk) for element in queryset)
     resource = queryset[0].class_name.lower()
-    return HttpResponseRedirect(
-        '/{}s/metadata/batch/{}/'.format(resource, ids))
+    form = BatchEditForm({
+        'ids': ids
+    })
+    name_space_mapper = {
+        'dataset': 'dataset_batch_metadata',
+        'map': 'map_batch_metadata',
+        'document': 'document_batch_metadata'
+    }
+
+    try:
+        name_space = name_space_mapper[resource]
+    except KeyError:
+        name_space = None
+
+    return render(
+        request,
+        "base/batch_edit.html",
+        context={
+            'form': form,
+            'ids': ids,
+            'model': resource,
+            'name_space': name_space
+        }
+    )
 
 
 metadata_batch_edit.short_description = 'Metadata batch edit'
@@ -63,11 +93,52 @@ metadata_batch_edit.short_description = 'Metadata batch edit'
 def set_batch_permissions(modeladmin, request, queryset):
     ids = ','.join([str(element.pk) for element in queryset])
     resource = queryset[0].class_name.lower()
-    return HttpResponseRedirect(
-        '/{}s/permissions/batch/{}/'.format(resource, ids))
+    form = BatchPermissionsForm(
+        {
+            'permission_type': ('r', ),
+            'mode': 'set',
+            'ids': ids
+        })
+
+    return render(
+        request,
+        "base/batch_permissions.html",
+        context={
+            'form': form,
+            'model': resource,
+        }
+    )
 
 
 set_batch_permissions.short_description = 'Set permissions'
+
+
+def set_user_and_group_dataset_permission(modeladmin, request, queryset):
+    ids = ','.join(str(element.pk) for element in queryset)
+    resource = queryset[0].__class__.__name__.lower()
+
+    model_mapper = {
+        "profile": "people",
+        "groupprofile": "groups"
+    }
+
+    form = UserAndGroupPermissionsForm({
+        'permission_type': ('r', ),
+        'mode': 'set',
+        'ids': ids,
+    })
+
+    return render(
+        request,
+        "base/user_and_group_permissions.html",
+        context={
+            "form": form,
+            "model": model_mapper[resource]
+        }
+    )
+
+
+set_user_and_group_dataset_permission.short_description = 'Set layer permissions'
 
 
 class LicenseAdmin(TabbedTranslationAdmin):
@@ -200,6 +271,89 @@ class ConfigurationAdmin(admin.ModelAdmin):
         return form
 
 
+class ThesaurusAdmin(admin.ModelAdmin):
+    change_list_template = "admin/thesauri/change_list.html"
+
+    model = Thesaurus
+    list_display = ('id', 'identifier')
+    list_display_links = ('id', 'identifier')
+    ordering = ('identifier',)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        my_urls = [
+            path('importrdf/', self.import_rdf, name="base_thesaurus_importrdf")
+        ]
+        return my_urls + urls
+
+    def import_rdf(self, request):
+        if request.method == "POST":
+            try:
+                rdf_file = request.FILES["rdf_file"]
+                name = slugify(rdf_file.name)
+                call_command('load_thesaurus', file=rdf_file, name=name)
+                self.message_user(request, "Your RDF file has been imported", messages.SUCCESS)
+                return redirect("..")
+            except Exception as e:
+                self.message_user(request, e.args[0], messages.ERROR)
+                return redirect("..")
+
+        form = ThesaurusImportForm()
+        payload = {"form": form}
+        return render(
+            request, "admin/thesauri/upload_form.html", payload
+        )
+
+
+class ThesaurusLabelAdmin(admin.ModelAdmin):
+    model = ThesaurusLabel
+    list_display = ('thesaurus_id', 'lang', 'label')
+    list_display_links = ('label',)
+    ordering = ('thesaurus__identifier', 'lang')
+
+    def thesaurus_id(self, obj):
+        return obj.thesaurus.identifier
+
+    thesaurus_id.short_description = 'Thesaurus'
+    thesaurus_id.admin_order_field = 'thesaurus__identifier'
+
+
+class ThesaurusKeywordAdmin(admin.ModelAdmin):
+    model = ThesaurusKeyword
+
+    list_display = ('thesaurus_id', 'about', 'alt_label',)
+    list_display_links = ('about', 'alt_label',)
+    ordering = ('thesaurus__identifier', 'alt_label',)
+    list_filter = ('thesaurus_id',)
+
+    def thesaurus_id(self, obj):
+        return obj.thesaurus.identifier
+
+    thesaurus_id.short_description = 'Thesaurus'
+    thesaurus_id.admin_order_field = 'thesaurus__identifier'
+
+
+class ThesaurusKeywordLabelAdmin(admin.ModelAdmin):
+    model = ThesaurusKeywordLabel
+
+    list_display = ('thesaurus_id', 'keyword_id', 'lang', 'label')
+    list_display_links = ('lang', 'label')
+    ordering = ('keyword__thesaurus__identifier', 'keyword__alt_label', 'lang')
+    list_filter = ('keyword__thesaurus__identifier', 'keyword_id', 'lang')
+
+    def thesaurus_id(self, obj):
+        return obj.keyword.thesaurus.identifier
+
+    thesaurus_id.short_description = 'Thesaurus'
+    thesaurus_id.admin_order_field = 'keyword__thesaurus__identifier'
+
+    def keyword_id(self, obj):
+        return obj.keyword.alt_label
+
+    keyword_id.short_description = 'Keyword'
+    keyword_id.admin_order_field = 'keyword__alt_label'
+
+
 admin.site.register(TopicCategory, TopicCategoryAdmin)
 admin.site.register(Region, RegionAdmin)
 admin.site.register(SpatialRepresentationType, SpatialRepresentationTypeAdmin)
@@ -213,11 +367,24 @@ admin.site.register(Menu, MenuAdmin)
 admin.site.register(MenuItem, MenuItemAdmin)
 admin.site.register(CuratedThumbnail, CuratedThumbnailAdmin)
 admin.site.register(Configuration, ConfigurationAdmin)
+admin.site.register(Thesaurus, ThesaurusAdmin)
+admin.site.register(ThesaurusLabel, ThesaurusLabelAdmin)
+admin.site.register(ThesaurusKeyword, ThesaurusKeywordAdmin)
+admin.site.register(ThesaurusKeywordLabel, ThesaurusKeywordLabelAdmin)
 
 
 class ResourceBaseAdminForm(autocomplete.FutureModelForm):
 
     keywords = TagField(widget=TaggitSelect2Custom('autocomplete_hierachical_keyword'))
+
+    def delete_queryset(self, request, queryset):
+        """
+        We need to invoke the 'ResourceBase.delete' method even when deleting
+        through the admin batch action
+        """
+        for obj in queryset:
+            from geonode.resource.manager import resource_manager
+            resource_manager.delete(obj.uuid, instance=obj)
 
     class Meta:
         pass

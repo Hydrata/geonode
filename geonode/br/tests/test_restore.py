@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -19,7 +18,7 @@
 #########################################################################
 
 import os
-import mock
+from unittest import mock
 import zipfile
 import tempfile
 
@@ -176,7 +175,7 @@ class RestoreCommandTests(GeoNodeBaseTestSupport):
             with zipfile.ZipFile(tmp_file, 'w', zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('something.txt', 'Some Content Here')
 
-            tmp_ini_file = tmp_file.name.rsplit('.', 1)[0] + '.ini'
+            tmp_ini_file = f"{tmp_file.name.rsplit('.', 1)[0]}.ini"
             from configparser import ConfigParser
             config = ConfigParser()
             config['database'] = {

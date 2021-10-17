@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
-
 from django.db import migrations, models
-import jsonfield.fields
+from django.db.models.fields.json import JSONField
 import datetime
 
 
@@ -53,7 +51,7 @@ class Migration(migrations.Migration):
                 ('value', models.CharField(max_length=255)),
                 ('value_num', models.DecimalField(default=None, null=True, max_digits=16, decimal_places=4, blank=True)),
                 ('value_raw', models.TextField(default=None, null=True, blank=True)),
-                ('data', jsonfield.fields.JSONField(default={})),
+                ('data', JSONField(default=dict)),
                 ('label', models.ForeignKey(to='monitoring.MetricLabel', on_delete=models.CASCADE)),
             ],
         ),
@@ -131,7 +129,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterUniqueTogether(
             name='monitoredresource',
-            unique_together=set([('name', 'type')]),
+            unique_together={('name', 'type')},
         ),
         migrations.AddField(
             model_name='metricvalue',

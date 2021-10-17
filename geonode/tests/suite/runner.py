@@ -1,4 +1,7 @@
-
+from contextlib import contextmanager
+import faulthandler
+import io
+import os
 import sys
 import time
 import logging
@@ -6,6 +9,7 @@ import multiprocessing
 
 from multiprocessing import Process, Queue, Event
 from queue import Empty
+from typing import Collection
 
 from twisted.scripts.trial import Options, _getSuite
 from twisted.trial.runner import TrialRunner
@@ -37,7 +41,9 @@ class GeoNodeBaseSuiteDiscoverRunner(DiscoverRunner):
     def __init__(self, pattern=None, top_level=None, verbosity=1,
                  interactive=True, failfast=True, keepdb=False,
                  reverse=False, debug_mode=False, debug_sql=False, parallel=0,
-                 tags=None, exclude_tags=None, **kwargs):
+                 tags=None, exclude_tags=None, test_name_patterns=None,
+                 pdb=False, buffer=False, enable_faulthandler=True,
+                 timing=False, **kwargs):
         self.pattern = pattern
         self.top_level = top_level
         self.verbosity = verbosity
@@ -50,9 +56,32 @@ class GeoNodeBaseSuiteDiscoverRunner(DiscoverRunner):
         self.parallel = parallel
         self.tags = set(tags or [])
         self.exclude_tags = set(exclude_tags or [])
+        if not faulthandler.is_enabled() and enable_faulthandler:
+            try:
+                faulthandler.enable(file=sys.stderr.fileno())
+            except (AttributeError, io.UnsupportedOperation):
+                faulthandler.enable(file=sys.__stderr__.fileno())
+        self.pdb = pdb
+        if self.pdb and self.parallel > 1:
+            raise ValueError('You cannot use --pdb with parallel tests; pass --parallel=1 to use it.')
+        self.buffer = buffer
+        if self.buffer and self.parallel > 1:
+            raise ValueError(
+                'You cannot use -b/--buffer with parallel tests; pass '
+                '--parallel=1 to use it.'
+            )
+        self.test_name_patterns = None
+        self.time_keeper = TimeKeeper() if timing else NullTimeKeeper()
+        if test_name_patterns:
+            # unittest does not export the _convert_select_pattern function
+            # that converts command-line arguments to patterns.
+            self.test_name_patterns = {
+                pattern if '*' in pattern else f'*{pattern}*'
+                for pattern in test_name_patterns
+            }
 
 
-class BufferWritesDevice(object):
+class BufferWritesDevice:
 
     def __init__(self):
         self._data = []
@@ -76,7 +105,7 @@ class BufferWritesDevice(object):
 sys.stdout = null_file
 
 
-class ParallelTestSuiteRunner(object):
+class ParallelTestSuiteRunner:
 
     def __init__(self, pattern=None, top_level=None, verbosity=1,
                  interactive=True, failfast=True, keepdb=False,
@@ -136,7 +165,7 @@ class ParallelTestSuiteRunner(object):
             group_tests = tests[group]
             del tests[group]
 
-            logger.debug('Running tests in a main process: %s' % (group_tests))
+            logger.debug(f'Running tests in a main process: {group_tests}')
             pending_not_thread_safe_tests[group] = group_tests
             result = self._tests_func(tests=group_tests, worker_index=None)
             results_queue.put((group, result), block=False)
@@ -166,13 +195,13 @@ class ParallelTestSuiteRunner(object):
             worker_count = worker_max
 
         worker_args = (tests_queue, results_queue, stop_event)
-        logger.debug("Number of workers %s " % worker_count)
+        logger.debug(f"Number of workers {worker_count} ")
         workers = self._create_worker_pool(pool_size=worker_count,
                                            target_func=self._run_tests_worker,
                                            worker_args=worker_args)
 
         for index, worker in enumerate(workers):
-            logger.debug('Staring worker %s' % (index))
+            logger.debug(f'Staring worker {index}')
             worker.start()
 
         if workers:
@@ -190,7 +219,7 @@ class ParallelTestSuiteRunner(object):
                         else:
                             pending_not_thread_safe_tests.pop(group)
                     except KeyError:
-                        logger.debug('Got a result for unknown group: %s' % (group))
+                        logger.debug(f'Got a result for unknown group: {group}')
                     else:
                         completed_tests[group] = result
                         self._print_result(result)
@@ -234,19 +263,13 @@ class ParallelTestSuiteRunner(object):
                     if stop_event.is_set():
                         # We should stop
                         break
-
                     try:
-                        result = None
                         logger.debug(
-                            'Worker %s is running tests %s' %
-                            (index, tests))
-                        result = self._tests_func(
-                            tests=tests, worker_index=index)
-
+                            f'Worker {index} is running tests {tests}')
+                        result = self._tests_func(tests=tests, worker_index=index)
                         results_queue.put((group, result))
                         logger.debug(
-                            'Worker %s has finished running tests %s' %
-                            (index, tests))
+                            f'Worker {index} has finished running tests {tests}')
                     except (KeyboardInterrupt, SystemExit):
                         if isinstance(self, TwistedParallelTestSuiteRunner):
                             # Twisted raises KeyboardInterrupt when the tests
@@ -255,21 +278,16 @@ class ParallelTestSuiteRunner(object):
                         else:
                             raise
                     except Exception as e:
-                        import traceback
-                        tb = traceback.format_exc()
-                        logger.error(tb)
-                        logger.debug('Running tests failed, reason: %s' % (str(e)))
-
+                        logger.debug(f'Running tests failed, reason: {e}')
                         result = TestResult().from_exception(e)
                         results_queue.put((group, result))
             except Empty:
                 logger.debug(
-                    'Worker %s timed out while waiting for tests to run' %
-                    (index))
+                    f'Worker {index} timed out while waiting for tests to run')
         finally:
             tests_queue.close()
             results_queue.close()
-        logger.debug('Worker %s is stopping' % (index))
+        logger.debug(f'Worker {index} is stopping')
 
     def _pre_tests_func(self):
         # This method gets called before _tests_func is called
@@ -289,7 +307,7 @@ class ParallelTestSuiteRunner(object):
     def _exit(self, start_time, end_time, failure_count, error_count):
         time_difference = (end_time - start_time)
 
-        print("Total run time: {} seconds".format(time_difference), file=sys.stderr)
+        print(f"Total run time: {time_difference} seconds", file=sys.stderr)
         try:
             sys.exit(failure_count + error_count)
         except Exception:
@@ -397,8 +415,7 @@ class DjangoParallelTestSuiteRunner(ParallelTestSuiteRunner,
                 all_deps.update(dependencies.get(alias, []))
             if not all_deps.isdisjoint(aliases):
                 raise ImproperlyConfigured(
-                    "Circular dependency: databases %r depend on each other, "
-                    "but are aliases." % aliases
+                    f"Circular dependency: databases {aliases!r} depend on each other, but are aliases."
                 )
             dependencies_map[sig] = all_deps
 
@@ -430,8 +447,7 @@ class DjangoParallelTestSuiteRunner(ParallelTestSuiteRunner,
         worker_index = kwargs.get('worker_index', None)
         for alias in connections:
             connection = connections[alias]
-            database_name = 'test_%d_%s' % (
-                worker_index, connection.settings_dict['NAME'])
+            database_name = f"test_{worker_index}_{connection.settings_dict['NAME']}"
             connection.settings_dict['TEST_NAME'] = database_name
 
             item = test_databases.setdefault(
@@ -482,17 +498,17 @@ class DjangoParallelTestSuiteRunner(ParallelTestSuiteRunner,
 class DjangoParallelTestRunner(DiscoverRunner):
     def __init__(self, verbosity=2, failfast=True, **kwargs):
         stream = BufferWritesDevice()
-        super(DjangoParallelTestRunner, self).__init__(stream=stream,
-                                                       verbosity=verbosity,
-                                                       failfast=failfast)
+        super().__init__(stream=stream,
+                         verbosity=verbosity,
+                         failfast=failfast)
 
 
 class TwistedParallelTestSuiteRunner(ParallelTestSuiteRunner):
     def __init__(self, config, verbosity=1, interactive=False, failfast=True,
                  **kwargs):
         self.config = config
-        super(TwistedParallelTestSuiteRunner, self).__init__(verbosity, interactive,
-                                                             failfast, **kwargs)
+        super().__init__(verbosity, interactive,
+                         failfast, **kwargs)
 
     def run_tests(self, test_labels, extra_tests=None, **kwargs):
         app_tests = self._group_by_app(test_labels)
@@ -541,7 +557,7 @@ class TwistedParallelTestSuiteRunner(ParallelTestSuiteRunner):
                            forceGarbageCollection=config['force-gc'])
 
 
-class TestResult(object):
+class TestResult:
     dots = False
     errors = None
     failures = None
@@ -582,3 +598,33 @@ class TestResult(object):
             klass, message = failure
             formatted.append((str(klass), message))
         return formatted
+
+
+class NullTimeKeeper:
+    @contextmanager
+    def timed(self, name):
+        yield
+
+    def print_results(self):
+        pass
+
+
+class TimeKeeper:
+    def __init__(self):
+        self.records = Collection.defaultdict(list)
+
+    @contextmanager
+    def timed(self, name):
+        self.records[name]
+        start_time = time.perf_counter()
+        try:
+            yield
+        finally:
+            end_time = time.perf_counter() - start_time
+            self.records[name].append(end_time)
+
+    def print_results(self):
+        for name, end_times in self.records.items():
+            for record_time in end_times:
+                record = f'{name} took {record_time:.3f}s'
+                sys.stderr.write(record + os.linesep)

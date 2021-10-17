@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -28,22 +27,29 @@ from django.utils.deprecation import MiddlewareMixin
 
 from geonode import geoserver
 from geonode.utils import check_ogc_backend
-from geonode.base.auth import get_token_object_from_session
+from geonode.base.auth import get_token_object_from_session, basic_auth_authenticate_user
 
 from guardian.shortcuts import get_anonymous_user
+
+
+# make sure login_url can be mapped to redirection URL and will match request.path
+login_url = settings.LOGIN_URL.replace(settings.SITEURL.rstrip('/'), '')
+if not login_url.startswith('/'):
+    login_url = f"/{login_url}"
 
 if check_ogc_backend(geoserver.BACKEND_PACKAGE):
     white_list_paths = (
         reverse('account_login'),
         reverse('forgot_username'),
         reverse('help'),
-        reverse('layer_acls'),
-        reverse('layer_acls_dep'),
-        reverse('layer_resolve_user'),
-        reverse('layer_resolve_user_dep'),
+        reverse('dataset_acls'),
+        reverse('dataset_acls_dep'),
+        reverse('dataset_resolve_user'),
+        reverse('dataset_resolve_user_dep'),
         '/account/(?!.*(?:signup))',
         # block unauthenticated users from creating new accounts.
         '/static/*',
+        login_url,
     )
 else:
     white_list_paths = (
@@ -53,6 +59,7 @@ else:
         '/account/(?!.*(?:signup))',
         # block unauthenticated users from creating new accounts.
         '/static/*',
+        login_url,
     )
 
 white_list = [compile(x) for x in white_list_paths + getattr(settings, "AUTH_EXEMPT_URLS", ())]
@@ -62,21 +69,39 @@ class LoginRequiredMiddleware(MiddlewareMixin):
 
     """
     Requires a user to be logged in to access any page that is not white-listed.
+
+    This middleware simply checks user property of a request, to determine whether the query is authenticated or not,
+    but since DRF assumes correlation between session authentication and presence of user property in the request,
+    an additional check was introduced in the middleware, to allow Basic authenticated requests without additional
+    middleware setting this property (otherwise, all DRF views configured with:
+    `authentication_classes = [SessionAuthentication,]`
+    would accept Basic authenticated requests (regardless of presence of `BasicAuthentication` in view's
+    authentication_classes).
     """
 
-    redirect_to = getattr(settings, 'LOGIN_URL', reverse('account_login'))
+    redirect_to = login_url
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def process_request(self, request):
-        if not request.user.is_authenticated or \
-        request.user == get_anonymous_user():
+
+        if not request.user.is_authenticated or request.user == get_anonymous_user():
+
+            if "HTTP_AUTHORIZATION" in request.META:
+                auth_header = request.META.get("HTTP_AUTHORIZATION", request.META.get("HTTP_AUTHORIZATION2"))
+
+                if auth_header and "Basic" in auth_header:
+                    user = basic_auth_authenticate_user(auth_header)
+
+                    if user:
+                        # allow Basic Auth authenticated requests with valid credentials
+                        return
+
             if not any(path.match(request.path) for path in white_list):
                 return HttpResponseRedirect(
-                    '{login_path}?next={request_path}'.format(
-                        login_path=self.redirect_to,
-                        request_path=request.path))
+                    f"{self.redirect_to}?next={request.path}"
+                )
 
 
 class SessionControlMiddleware(MiddlewareMixin):
@@ -117,6 +142,4 @@ class SessionControlMiddleware(MiddlewareMixin):
 
             if not any(path.match(request.path) for path in white_list):
                 return HttpResponseRedirect(
-                    '{login_path}?next={request_path}'.format(
-                        login_path=self.redirect_to,
-                        request_path=request.path))
+                    f'{self.redirect_to}?next={request.path}')

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -23,7 +22,7 @@ from django.conf.urls import include, url
 from django.conf import settings
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.conf.urls.static import static
-from geonode.sitemap import LayerSitemap, MapSitemap
+from geonode.sitemap import DatasetSitemap, MapSitemap
 from django.views.generic import TemplateView
 from django.contrib import admin
 from django.conf.urls.i18n import i18n_patterns
@@ -34,15 +33,19 @@ import geonode.proxy.urls
 from . import views
 from . import version
 
-from geonode.api.urls import api
+from geonode.api.urls import api, router
 from geonode.api.views import verify_token, user_info, roles, users, admin_role
 from geonode.base.views import thumbnail_upload
 
-from geonode import geoserver, qgis_server  # noqa
+from geonode import geoserver
 from geonode.utils import check_ogc_backend
-from geonode.monitoring import register_url_event
+from geonode.base import register_url_event
 from geonode.messaging.urls import urlpatterns as msg_urls
 from .people.views import CustomSignupView
+from oauth2_provider.urls import (
+    app_name as oauth2_app_name,
+    base_urlpatterns,
+    oidc_urlpatterns)
 
 admin.autodiscover()
 
@@ -52,7 +55,7 @@ js_info_dict = {
 }
 
 sitemaps = {
-    "layer": LayerSitemap,
+    "dataset": DatasetSitemap,
     "map": MapSitemap
 }
 
@@ -88,19 +91,32 @@ urlpatterns = [
 
 urlpatterns += [
 
-    # Layer views
-    url(r'^layers/', include('geonode.layers.urls')),
+    # ResourceBase views
+    url(r'^base/', include('geonode.base.urls')),
+
+    # Dataset views
+    url(r'^datasets/', include('geonode.layers.urls')),
+
+    # Remote Services views
+    url(r'^services/', include('geonode.services.urls')),
 
     # Map views
     url(r'^maps/', include('geonode.maps.urls')),
 
+    # Documents views
+    url(r'^documents/', include('geonode.documents.urls')),
+
+    # Apps views
+    url(r'^apps/', include('geonode.geoapps.urls')),
+
     # Catalogue views
     url(r'^catalogue/', include('geonode.catalogue.urls')),
 
-    # data.json
-    url(r'^data.json$',
-        geonode.catalogue.views.data_json,
-        name='data_json'),
+    # Group Profiles views
+    url(r'^groups/', include('geonode.groups.urls')),
+
+    # Harvesting views
+    url(r'^harvesters/', include('geonode.harvesting.urls')),
 
     # ident
     url(r'^ident.json$',
@@ -144,24 +160,22 @@ urlpatterns += [
         geonode.views.moderator_contacted,
         name='moderator_contacted'),
 
-    url(r'^groups/', include('geonode.groups.urls')),
-    url(r'^documents/', include('geonode.documents.urls')),
-    url(r'^services/', include('geonode.services.urls')),
-    url(r'^base/', include('geonode.base.urls')),
-
-    # OAuth Provider
+    # OAuth2/OIDC Provider
     url(r'^o/',
-        include('oauth2_provider.urls',
-                namespace='oauth2_provider')),
-
-    # Api Views
+        include((base_urlpatterns + oidc_urlpatterns, oauth2_app_name), namespace='oauth2_provider')),
     url(r'^api/o/v4/tokeninfo',
         verify_token, name='tokeninfo'),
     url(r'^api/o/v4/userinfo',
         user_info, name='userinfo'),
+
+    # Api Views
     url(r'^api/roles', roles, name='roles'),
     url(r'^api/adminRole', admin_role, name='adminRole'),
     url(r'^api/users', users, name='users'),
+    url(r'^api/v2/', include(router.urls)),
+    url(r'^api/v2/', include('geonode.api.urls')),
+    url(r'^api/v2/', include('geonode.management_commands_http.urls')),
+    url(r'^api/v2/api-auth/', include('rest_framework.urls', namespace='geonode_rest_framework')),
     url(r'', include(api.urls)),
 
     # Curated Thumbnail
@@ -208,7 +222,7 @@ if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         url(r'^upload/', include('geonode.upload.urls')),
         # capabilities
         url(r'^capabilities/layer/(?P<layerid>\d+)/$',
-            get_capabilities, name='capabilities_layer'),
+            get_capabilities, name='capabilities_dataset'),
         url(r'^capabilities/map/(?P<mapid>\d+)/$',
             get_capabilities, name='capabilities_map'),
         url(r'^capabilities/user/(?P<user>[\w.@+-]+)/$',
@@ -217,16 +231,9 @@ if check_ogc_backend(geoserver.BACKEND_PACKAGE):
             get_capabilities, name='capabilities_category'),
         url(r'^gs/', include('geonode.geoserver.urls')),
     ]
-if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-    # QGIS Server's urls
-    urlpatterns += [  # '',
-        url(r'^qgis-server/',
-            include(('geonode.qgis_server.urls', 'geonode.qgis_server'),
-                    namespace='qgis_server')),
-    ]
 
 if settings.NOTIFICATIONS_MODULE in settings.INSTALLED_APPS:
-    notifications_urls = '{}.urls'.format(settings.NOTIFICATIONS_MODULE)
+    notifications_urls = f'{settings.NOTIFICATIONS_MODULE}.urls'
     urlpatterns += [  # '',
         url(r'^notifications/', include(notifications_urls)),
     ]
@@ -242,7 +249,10 @@ urlpatterns += geonode.proxy.urls.urlpatterns
 urlpatterns += staticfiles_urlpatterns()
 urlpatterns += static(settings.LOCAL_MEDIA_URL,
                       document_root=settings.MEDIA_ROOT)
+handler401 = 'geonode.views.err403'
 handler403 = 'geonode.views.err403'
+handler404 = 'geonode.views.handler404'
+handler500 = 'geonode.views.handler500'
 
 # Featured Maps Pattens
 urlpatterns += [  # '',
@@ -257,3 +267,9 @@ if settings.MONITORING_ENABLED:
     urlpatterns += [url(r'^monitoring/',
                         include(('geonode.monitoring.urls', 'geonode.monitoring'),
                                 namespace='monitoring'))]
+
+
+# Internationalization Javascript
+urlpatterns += [
+    url(r'^metadata_update_redirect$', views.metadata_update_redirect, name='metadata_update_redirect'),
+]

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -20,7 +19,7 @@
 
 import os
 
-__version__ = (3, 1, 0, 'unstable', 0)
+__version__ = (4, 0, 0, 'unstable', 0)
 
 
 default_app_config = "geonode.apps.AppConfig"

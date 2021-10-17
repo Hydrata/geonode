@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,18 +16,18 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-import logging
 import pytz
 import hashlib
-from six import string_types
+import logging
 
 from datetime import datetime
+
 from django.conf import settings
-from geonode.monitoring.models import Service, Host
-from geonode.monitoring.utils import MonitoringHandler
 from django.http import HttpResponse
 from django.utils.deprecation import MiddlewareMixin
+
+from geonode.monitoring.models import Service, Host
+from geonode.monitoring.utils import MonitoringHandler
 
 
 FILTER_URLS = (settings.MEDIA_URL,
@@ -48,7 +47,7 @@ class MonitoringMiddleware(MiddlewareMixin):
         self.setup_logging()
 
     def setup_logging(self):
-        self.log = logging.getLogger('{}.catcher'.format(__name__))
+        self.log = logging.getLogger(f'{__name__}.catcher')
         self.log.propagate = False
         self.log.setLevel(logging.DEBUG)
         self.log.handlers = []
@@ -67,16 +66,16 @@ class MonitoringMiddleware(MiddlewareMixin):
         if host:
             try:
                 service = Service.objects.get(host=host, name=sname)
-                return service
             except Service.DoesNotExist:
                 service = None
+            return service
 
     @staticmethod
     def should_process(request):
         current = request.path
 
         for skip_url in settings.MONITORING_SKIP_PATHS:
-            if isinstance(skip_url, string_types):
+            if isinstance(skip_url, str):
                 if current.startswith(skip_url):
                     return False
             elif hasattr(skip_url, 'match'):

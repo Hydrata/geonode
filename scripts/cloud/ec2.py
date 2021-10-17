@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -34,12 +33,15 @@ import configparser
 import os
 import sys
 import time
-
+import logging
 import botocore
 
 import boto3
 
+
 CONFIG_FILE = ".gnec2.cfg"
+logger = logging.getLogger(__name__)
+
 
 # Ubuntu
 # https://help.ubuntu.com/community/EC2StartersGuide
@@ -101,9 +103,8 @@ def wait_for_state(ec2, instance_id, state):
 
 def writeconfig(config):
     # Writing our configuration file to CONFIG_FILE
-    configfile = open(CONFIG_FILE, 'wb')
-    config.write(configfile)
-    configfile.close()
+    with open(CONFIG_FILE, 'wb') as configfile:
+        config.write(configfile)
 
 
 def readconfig(default_ami=None):
@@ -199,7 +200,7 @@ def launch():
         key_pairs = ec2.describe_key_pairs(KeyNames=[key_name])['KeyPairs']
     except botocore.exceptions.ClientError:
         # Key is not likely not defined
-        print("GeoNode file not found in server.")
+        logger.warning("GeoNode file not found in server.")
         key_pairs = ec2.describe_key_pairs()['KeyPairs']
 
     key = key_pairs[0] if len(
@@ -219,13 +220,13 @@ def launch():
     print("Firing up instance...")
     instance = wait_for_state(ec2, instance_id, 'running')
     dns = instance['PublicDnsName']
-    print(("Instance running at %s" % dns))
+    print(f"Instance running at {dns}")
 
     config.set('ec2', 'HOST', dns)
     config.set('ec2', 'INSTANCE', instance_id)
     writeconfig(config)
 
-    print(("ssh -i %s ubuntu@%s" % (key_path, dns)))
+    print(f"ssh -i {key_path} ubuntu@{dns}")
     print("Terminate the instance via the web interface.")
 
     time.sleep(20)
@@ -244,9 +245,8 @@ def terminate():
 
     config.set('ec2', 'HOST', '')
     config.set('ec2', 'INSTANCE', '')
-    configfile = open(CONFIG_FILE, 'wb')
-    config.write(configfile)
-    configfile.close()
+    with open(CONFIG_FILE, 'wb') as configfile:
+        config.write(configfile)
 
 
 if __name__ == '__main__':
@@ -265,7 +265,4 @@ if __name__ == '__main__':
         config = readconfig()
         print(config.get('ec2', 'KEY_PATH'))
     else:
-        print("Usage:\n    " +
-              "python %s launch_base\n     " % sys.argv[0] +
-              "python %s launch_geonode\n    " % sys.argv[0] +
-              "python %s terminate" % sys.argv[0])
+        print(f"Usage:\n    python {sys.argv[0]} launch_base\n     python {sys.argv[0]} launch_geonode\n    python {sys.argv[0]} terminate")

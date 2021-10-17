@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 from django.db import migrations, models
 from django.db.models import F
 
@@ -17,5 +15,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(copy_typename),
+        migrations.RunPython(copy_typename, migrations.RunPython.noop),
     ]

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -23,7 +22,6 @@ import pytz
 from datetime import datetime, timedelta
 from decimal import Decimal
 from itertools import chain
-from six import string_types, integer_types
 
 from django.conf import settings
 from django.db import models
@@ -54,7 +52,7 @@ from geonode.utils import parse_datetime
 log = logging.getLogger(__name__)
 
 
-class CollectorAPI(object):
+class CollectorAPI:
 
     def __init__(self):
         pass
@@ -107,7 +105,7 @@ class CollectorAPI(object):
                      'value_raw': rate,
                      'value_num': rate,
                      'label': iface_label,
-                     'metric': '{}.rate'.format(metric_name)}
+                     'metric': f'{metric_name}.rate'}
             mdata.update(metric_defaults)
             log.debug(MetricValue.add(**mdata))
 
@@ -162,7 +160,7 @@ class CollectorAPI(object):
             if metric_name is None:
                 continue
             value = metric_data['value']
-            if isinstance(value, string_types):
+            if isinstance(value, str):
                 value = value.replace(',', '.')
             mdata = {'value': value,
                      'value_raw': value,
@@ -208,13 +206,13 @@ class CollectorAPI(object):
                          'value_raw': tx_value,
                          'value_num': tx_value,
                          'label': ifname,
-                         'metric': 'network.{}'.format(tx_label)}
+                         'metric': f'network.{tx_label}'}
                 mdata.update(mdefaults)
                 rate = self._calculate_rate(
                     mdata['metric'], ifname, tx_value, valid_to)
                 log.debug(MetricValue.add(**mdata))
                 if rate:
-                    mdata['metric'] = '{}.rate'.format(mdata['metric'])
+                    mdata['metric'] = f"{mdata['metric']}.rate"
                     mdata['value'] = rate
                     mdata['value_num'] = rate
                     mdata['value_raw'] = rate
@@ -233,7 +231,7 @@ class CollectorAPI(object):
             mdata = {'value': mdata,
                      'value_raw': mdata,
                      'value_num': mdata,
-                     'metric': 'mem.{}'.format(mkey),
+                     'metric': f'mem.{mkey}',
                      'label': 'B',
                      }
             mdata.update(mdefaults)
@@ -276,7 +274,7 @@ class CollectorAPI(object):
                 mdata = {'value': l,
                          'value_raw': l,
                          'value_num': l,
-                         'metric': 'load.{}m'.format(llabel[lidx]),
+                         'metric': f'load.{llabel[lidx]}m',
                          'label': 'Value',
                          }
 
@@ -330,7 +328,7 @@ class CollectorAPI(object):
                 mdata['valid_to'])
             if rate:
                 rate_data = mdata.copy()
-                rate_data['metric'] = '{}.rate'.format(mdata['metric'])
+                rate_data['metric'] = f"{mdata['metric']}.rate"
                 rate_data['value'] = rate
                 rate_data['value_num'] = rate
                 rate_data['value_raw'] = rate
@@ -343,7 +341,7 @@ class CollectorAPI(object):
                 mdata['valid_to'])
             if percent:
                 percent_data = mdata.copy()
-                percent_data['metric'] = '{}.percent'.format(mdata['metric'])
+                percent_data['metric'] = f"{mdata['metric']}.percent"
                 percent_data['value'] = percent
                 percent_data['value_num'] = percent
                 percent_data['value_raw'] = percent
@@ -384,7 +382,6 @@ class CollectorAPI(object):
     def set_metric_values(self, metric_name, column_name,
                           requests, service, **metric_values):
         metric = Metric.get_for(metric_name, service=service)
-        q = requests
 
         def _key(v):
             return v['value']
@@ -398,7 +395,6 @@ class CollectorAPI(object):
             row['samples'] = requests.count()
             row['label'] = Metric.TYPE_RATE
             q = [row]
-
         elif metric.is_count:
             q = []
             values = requests.distinct(
@@ -413,7 +409,6 @@ class CollectorAPI(object):
                 q.append(row)
             q.sort(key=_key)
             q.reverse()
-
         elif metric.is_value:
             q = []
             is_user_metric = column_name == "user_identifier"
@@ -437,16 +432,14 @@ class CollectorAPI(object):
                     q.append(row)
             q.sort(key=_key)
             q.reverse()
-
         elif metric.is_value_numeric:
             q = []
             row = requests.aggregate(value=models.Max(column_name),
                                      samples=models.Count(column_name))
             row['label'] = Metric.TYPE_VALUE_NUMERIC
             q.append(row)
-
         else:
-            raise ValueError("Unsupported metric type: {}".format(metric.type))
+            raise ValueError(f"Unsupported metric type: {metric.type}")
         rows = q[:100]
         metric_values.update({'metric': metric_name, 'service': service})
         for row in rows:
@@ -457,7 +450,7 @@ class CollectorAPI(object):
                                   'label': label,
                                   'samples_count': samples,
                                   'value_raw': value or 0,
-                                  'value_num': value if isinstance(value, integer_types + (float, Decimal,)) else None})
+                                  'value_num': value if isinstance(value, (float, Decimal, int)) else None})
             log.debug(MetricValue.add(**metric_values))
 
     def process(self, service, data, valid_from, valid_to, *args, **kwargs):
@@ -666,7 +659,7 @@ class CollectorAPI(object):
         """
         metric = Metric.get_for(metric_name, service=service)
         if not metric:
-            raise ValueError("Invalid metric {}".format(metric_name))
+            raise ValueError(f"Invalid metric {metric_name}")
         f = metric.get_aggregate_name()
         return f or column_name
 
@@ -797,7 +790,7 @@ class CollectorAPI(object):
                                                           'count(1) as metric_count',
                                                           'sum(samples_count) as samples_count',
                                                           'sum(mv.value_num), min(mv.value_num)',
-                                                          'max(mv.value_num)', ],
+                                                          'max(mv.value_num)'],
                                           'from': [('join monitoring_monitoredresource mr '
                                                     'on (mv.resource_id = mr.id)')],
                                           'where': ['and ml.user is not NULL'],
@@ -837,9 +830,9 @@ class CollectorAPI(object):
 
         q_order_by = ['val desc']
 
-        q_select = [('select ml.name as label, {} as val, '
+        q_select = [(f'select ml.name as label, {agg_f} as val, '
                      'count(1) as metric_count, sum(samples_count) as samples_count, '
-                     'sum(mv.value_num), min(mv.value_num), max(mv.value_num)').format(agg_f)]
+                     'sum(mv.value_num), min(mv.value_num), max(mv.value_num)')]
         if service and service_type:
             raise ValueError(
                 "Cannot use service and service type in the same query")
@@ -882,11 +875,11 @@ class CollectorAPI(object):
             group_by_cfg = group_by_map[group_by]
             g_sel = group_by_cfg.get('select')
             if g_sel:
-                q_select.append(', {}'.format(', '.join(g_sel)))
+                q_select.append(f", {(', '.join(g_sel))}")
 
             g_sel = group_by_cfg.get('select_only')
             if g_sel:
-                q_select = ['select {}'.format(', '.join(g_sel))]
+                q_select = [f"select {(', '.join(g_sel))}"]
 
             q_from.extend(group_by_cfg['from'])
             q_where.extend(group_by_cfg['where'])
@@ -922,7 +915,7 @@ class CollectorAPI(object):
         if q_group:
             q_group = [' group by ', ','.join(q_group)]
         if q_order_by:
-            q_order_by = 'order by {}'.format(','.join(q_order_by))
+            q_order_by = f"order by {(','.join(q_order_by))}"
 
         q = ' '.join(chain(q_select, q_from, q_where, q_group, [q_order_by]))
 
@@ -974,7 +967,7 @@ class CollectorAPI(object):
         threshold = settings.MONITORING_DATA_TTL
         if not isinstance(threshold, timedelta):
             raise TypeError("MONITORING_DATA_TTL should be an instance of "
-                            "datatime.timedelta, not {}".format(threshold.__class__))
+                            f"datatime.timedelta, not {threshold.__class__}")
         cutoff = datetime.utcnow().replace(tzinfo=utc) - threshold
         ExceptionEvent.objects.filter(created__lte=cutoff).delete()
         RequestEvent.objects.filter(created__lte=cutoff).delete()
@@ -1005,8 +998,8 @@ class CollectorAPI(object):
 
     def send_mails(self, notification, emails, ndata, when=None):
         base_ctx = self.compose_notifications(ndata, when=when)
-        subject = _("GeoNode Monitoring on {} reports errors: {}").format(base_ctx['host'],
-                                                                          notification.notification_subject)
+        subject = _(f"GeoNode Monitoring on {base_ctx['host']} "
+                    f"reports errors: {notification.notification_subject}")
         for email in emails:
             ctx = {'recipient': {'username': email}}
             ctx.update(base_ctx)

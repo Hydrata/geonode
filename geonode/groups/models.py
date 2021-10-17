@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -19,27 +18,29 @@
 #########################################################################
 import os
 import logging
+
 from shutil import copyfile
-
-from django.conf import settings
-from django.urls import reverse
-from django.contrib.auth.models import Group
-from django.contrib.auth import get_user_model
-from django.db import models
-from django.db.models import Q
-from django.utils.translation import ugettext_lazy as _
-from django.utils.text import slugify
-from django.db.models import signals
-from django.utils.timezone import now
-from django.contrib.staticfiles.templatetags import staticfiles
-
 from taggit.managers import TaggableManager
 
+from django.db import models
+from django.db.models import Q
+from django.urls import reverse
+from django.conf import settings
+from django.db.models import signals
+from django.utils.text import slugify
+from django.utils.timezone import now
+from django.contrib.auth.models import Group
+from django.templatetags.static import static
+from django.contrib.auth import get_user_model
+from django.utils.translation import ugettext_lazy as _
+
+from geonode.utils import build_absolute_uri
+
 from guardian.shortcuts import (
-    get_objects_for_user,
-    get_objects_for_group,
     assign_perm,
-    remove_perm
+    remove_perm,
+    get_objects_for_user,
+    get_objects_for_group
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class GroupCategory(models.Model):
         verbose_name_plural = _('Group Categories')
 
     def __str__(self):
-        return "{0}".format(self.name)
+        return str(self.name)
 
     def get_absolute_url(self):
         return reverse('group_category_detail', args=(self.slug,))
@@ -109,14 +110,14 @@ class GroupProfile(models.Model):
     def save(self, *args, **kwargs):
         group, created = Group.objects.get_or_create(name=self.slug)
         self.group = group
-        super(GroupProfile, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         try:
             Group.objects.filter(name=str(self.slug)).delete()
         except Exception as e:
             logger.exception(e)
-        super(GroupProfile, self).delete(*args, **kwargs)
+        super().delete(*args, **kwargs)
 
     @classmethod
     def groups_for_user(cls, user):
@@ -130,7 +131,7 @@ class GroupProfile(models.Model):
         return []
 
     def __str__(self):
-        return "{0}".format(self.title)
+        return str(self.title)
 
     def keyword_list(self):
         """
@@ -156,10 +157,9 @@ class GroupProfile(models.Model):
                     if hasattr(item, resource_type):
                         _queryset.append(item)
                 except Exception as e:
-                    logger.exception(e)
+                    logger.debug(e)
         queryset = _queryset if _queryset else queryset
-        for resource in queryset:
-            yield resource
+        yield from queryset
 
     def member_queryset(self):
         return self.groupmember_set.all()
@@ -197,22 +197,25 @@ class GroupProfile(models.Model):
             return True
 
     def join(self, user, **kwargs):
-        if user == user.get_anonymous():
+        if not user or user.is_anonymous or user == user.get_anonymous():
             raise ValueError("The invited user cannot be anonymous")
-        member, created = GroupMember.objects.get_or_create(group=self, user=user, defaults=kwargs)
-        if not created:
-            logger.warning("The invited user \"{0}\" is already a member".format(user.username))
+        _members = GroupMember.objects.filter(group=self, user=user)
+        if not _members.count():
+            GroupMember.objects.get_or_create(group=self, user=user, defaults=kwargs)
+        else:
+            logger.warning(f"The invited user \"{user.username}\" is already a member")
 
     def leave(self, user, **kwargs):
-        if user == user.get_anonymous():
+        if not user or user.is_anonymous or user == user.get_anonymous():
             raise ValueError("The invited user cannot be anonymous")
-        member, created = GroupMember.objects.get_or_create(group=self, user=user, defaults=kwargs)
-        if not created:
-            member.demote()
-            user.groups.remove(self.group)
-            member.delete()
+        _members = GroupMember.objects.filter(group=self, user=user)
+        if _members.count():
+            for member in _members:
+                member.demote()
+                user.groups.remove(self.group)
+                member.delete()
         else:
-            logger.warning("The invited user \"{0}\" is not a member".format(user.username))
+            logger.warning(f"The invited user \"{user.username}\" is not a member")
 
     def get_absolute_url(self):
         return reverse('group_detail', args=[self.slug, ])
@@ -223,7 +226,7 @@ class GroupProfile(models.Model):
 
     @property
     def logo_url(self):
-        _missing_thumbnail_url = staticfiles.static(settings.MISSING_THUMBNAIL)
+        _missing_thumbnail_url = static(settings.MISSING_THUMBNAIL)
         try:
             _base_path = os.path.split(self.logo.path)[0]
             _upload_path = os.path.split(self.logo.url)[1]
@@ -237,8 +240,8 @@ class GroupProfile(models.Model):
             _url = self.logo.url
         except Exception as e:
             logger.debug(e)
-            return _missing_thumbnail_url
-        return _url
+            return build_absolute_uri(_missing_thumbnail_url)
+        return build_absolute_uri(_url)
 
 
 class GroupMember(models.Model):
@@ -256,33 +259,33 @@ class GroupMember(models.Model):
     def save(self, *args, **kwargs):
         # add django.contrib.auth.group to user
         self.user.groups.add(self.group.group)
-        super(GroupMember, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         self.user.groups.remove(self.group.group)
-        super(GroupMember, self).delete(*args, **kwargs)
+        super().delete(*args, **kwargs)
 
     def promote(self, *args, **kwargs):
         self.role = "manager"
         if settings.ADMIN_MODERATE_UPLOADS or settings.RESOURCE_PUBLISHING:
-            from geonode.security.models import ADMIN_PERMISSIONS
+            from geonode.security.permissions import ADMIN_PERMISSIONS
             queryset = get_objects_for_user(
                 self.user, 'base.view_resourcebase').filter(group=self.group.group)
             for _r in queryset.exclude(owner=self.user):
                 for perm in ADMIN_PERMISSIONS:
                     assign_perm(perm, self.user, _r.get_self_resource())
-        super(GroupMember, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def demote(self, *args, **kwargs):
         self.role = "member"
         if settings.ADMIN_MODERATE_UPLOADS or settings.RESOURCE_PUBLISHING:
-            from geonode.security.models import ADMIN_PERMISSIONS
+            from geonode.security.permissions import ADMIN_PERMISSIONS
             queryset = get_objects_for_user(
                 self.user, 'base.view_resourcebase').filter(group=self.group.group)
             for _r in queryset.exclude(owner=self.user):
                 for perm in ADMIN_PERMISSIONS:
                     remove_perm(perm, self.user, _r.get_self_resource())
-        super(GroupMember, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
 
 def group_pre_delete(instance, sender, **kwargs):

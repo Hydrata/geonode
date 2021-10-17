@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -17,38 +16,32 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-import logging
-import uuid
-
-from django.conf import settings
-from django.db import models
-from django.db.models import signals
 import json
-from django.contrib.contenttypes.models import ContentType
-from django.utils.translation import ugettext_lazy as _
-from django.core.exceptions import ObjectDoesNotExist
-from django.urls import reverse
-from django.template.defaultfilters import slugify
-from django.core.cache import cache
-
-from geonode.layers.models import Layer
-from geonode.compat import ensure_string
-from geonode.base.models import ResourceBase, resourcebase_post_save
-from geonode.maps.signals import map_changed_signal
-from geonode.security.utils import remove_object_permissions
-from geonode.client.hooks import hookset
-from geonode.utils import (GXPMapBase,
-                           GXPLayerBase,
-                           layer_from_viewer_config,
-                           default_map_config,
-                           num_encode)
-
-from geonode import geoserver, qgis_server  # noqa
-from geonode.utils import check_ogc_backend
+import uuid
+import logging
 
 from deprecated import deprecated
-from pinax.ratings.models import OverallRating
+
+from django.db import models
+from django.urls import reverse
+from django.conf import settings
+from django.core.cache import cache
+from django.template.defaultfilters import slugify
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils.translation import ugettext_lazy as _
+
+from geonode import geoserver  # noqa
+from geonode.compat import ensure_string
+from geonode.client.hooks import hookset
+from geonode.utils import check_ogc_backend
+from geonode.base.models import ResourceBase
+from geonode.layers.models import Dataset, Style
+from geonode.maps.signals import map_changed_signal
+from geonode.utils import (
+    GXPMapBase,
+    GXPLayerBase,
+    dataset_from_viewer_config,
+    default_map_config)
 
 logger = logging.getLogger("geonode.maps.models")
 
@@ -91,8 +84,7 @@ class Map(ResourceBase, GXPMapBase):
     # Full URL for featured map view, ie http://domain/someview
 
     def __str__(self):
-        return '%s by %s' % (
-            self.title, (self.owner.username if self.owner else "<Anonymous>"))
+        return f'{self.title} by {(self.owner.username if self.owner else "<Anonymous>")}'
 
     @property
     def center(self):
@@ -103,51 +95,51 @@ class Map(ResourceBase, GXPMapBase):
         return (self.center_x, self.center_y)
 
     @property
-    def layers(self):
+    def datasets(self):
         layers = MapLayer.objects.filter(map=self.id)
         return [layer for layer in layers]
 
     @property
-    def local_layers(self):
-        layer_names = MapLayer.objects.filter(map__id=self.id).values('name')
-        return Layer.objects.filter(alternate__in=layer_names) | \
-            Layer.objects.filter(name__in=layer_names)
+    def local_datasets(self):
+        dataset_names = MapLayer.objects.filter(map__id=self.id).values('name')
+        return Dataset.objects.filter(alternate__in=dataset_names) | \
+            Dataset.objects.filter(name__in=dataset_names)
 
-    def json(self, layer_filter):
+    def json(self, dataset_filter):
         """
         Get a JSON representation of this map suitable for sending to geoserver
         for creating a download of all layers
         """
-        map_layers = MapLayer.objects.filter(map=self.id)
+        map_datasets = MapLayer.objects.filter(map=self.id)
         layers = []
-        for map_layer in map_layers:
-            if map_layer.local:
-                layer = Layer.objects.get(alternate=map_layer.name)
+        for map_dataset in map_datasets:
+            if map_dataset.local:
+                layer = Dataset.objects.get(alternate=map_dataset.name)
                 layers.append(layer)
             else:
                 pass
 
-        if layer_filter:
-            layers = [lyr for lyr in layers if layer_filter(lyr)]
+        if dataset_filter:
+            layers = [lyr for lyr in layers if dataset_filter(lyr)]
 
         # the readme text will appear in a README file in the zip
         readme = (
-            "Title: %s\n" +
-            "Author: %s\n" +
-            "Abstract: %s\n"
-        ) % (self.title, self.poc, self.abstract)
+            f"Title: {self.title}\n" +
+            f"Author: {self.poc}\n" +
+            f"Abstract: {self.abstract}\n"
+        )
         if self.license:
-            readme += "License: %s" % self.license
+            readme += f"License: {self.license}"
             if self.license.url:
-                readme += " (%s)" % self.license.url
+                readme += f" ({self.license.url})"
             readme += "\n"
         if self.constraints_other:
-            readme += "Additional constraints: %s\n" % self.constraints_other
+            readme += f"Additional constraints: {self.constraints_other}\n"
 
-        def layer_json(lyr):
+        def dataset_json(lyr):
             return {
                 "name": lyr.alternate,
-                "service": lyr.service_type if hasattr(lyr, 'service_type') else "QGIS Server",
+                "service": lyr.service_type if hasattr(lyr, 'service_type') else "",
                 "serviceURL": "",
                 "metadataURL": ""
             }
@@ -155,7 +147,7 @@ class Map(ResourceBase, GXPMapBase):
         map_config = {
             # the title must be provided and is used for the zip file name
             "map": {"readme": readme, "title": self.title},
-            "layers": [layer_json(lyr) for lyr in layers]
+            "datasets": [dataset_json(lyr) for lyr in layers]
         }
 
         return json.dumps(map_config)
@@ -223,21 +215,23 @@ class Map(ResourceBase, GXPMapBase):
                     return {}
 
         layers = [lyr for lyr in _map.get("layers", [])]
-        layer_names = set(lyr.alternate for lyr in self.local_layers)
+        dataset_names = {lyr.alternate for lyr in self.local_datasets}
 
-        self.layer_set.all().delete()
+        self.dataset_set.all().delete()
         self.keywords.add(*_map.get('keywords', []))
 
         for ordering, layer in enumerate(layers):
-            self.layer_set.add(
-                layer_from_viewer_config(
+            self.dataset_set.add(
+                dataset_from_viewer_config(
                     self.id, MapLayer, layer, source_for(layer), ordering
                 ))
 
-        self.save(notify=True)
+        from geonode.resource.manager import resource_manager
+        resource_manager.update(self.uuid, instance=self, notify=True)
+        resource_manager.set_thumbnail(self.uuid, instance=self, overwrite=False)
 
-        if layer_names != set([lyr.alternate for lyr in self.local_layers]):
-            map_changed_signal.send_robust(sender=self, what_changed='layers')
+        if dataset_names != {lyr.alternate for lyr in self.local_datasets}:
+            map_changed_signal.send_robust(sender=self, what_changed='datasets')
 
         return template_name
 
@@ -249,28 +243,32 @@ class Map(ResourceBase, GXPMapBase):
             return []
 
     def get_absolute_url(self):
-        return reverse('map_detail', None, [str(self.id)])
+        return hookset.map_detail_url(self)
 
-    def get_bbox_from_layers(self, layers):
+    @property
+    def embed_url(self):
+        return reverse('map_embed', kwargs={'mapid': self.pk})
+
+    def get_bbox_from_datasets(self, layers):
         """
-        Calculate the bbox from a given list of Layer objects
+        Calculate the bbox from a given list of Dataset objects
 
         bbox format: [xmin, xmax, ymin, ymax]
         """
         bbox = None
         for layer in layers:
-            layer_bbox = layer.bbox
+            dataset_bbox = layer.bbox
             if bbox is None:
-                bbox = list(layer_bbox[0:4])
+                bbox = list(dataset_bbox[0:4])
             else:
-                bbox[0] = min(bbox[0], layer_bbox[0])
-                bbox[1] = max(bbox[1], layer_bbox[1])
-                bbox[2] = min(bbox[2], layer_bbox[2])
-                bbox[3] = max(bbox[3], layer_bbox[3])
+                bbox[0] = min(bbox[0], dataset_bbox[0])
+                bbox[1] = max(bbox[1], dataset_bbox[1])
+                bbox[2] = min(bbox[2], dataset_bbox[2])
+                bbox[3] = max(bbox[3], dataset_bbox[3])
 
         return bbox
 
-    def create_from_layer_list(self, user, layers, title, abstract):
+    def create_from_dataset_list(self, user, layers, title, abstract):
         self.owner = user
         self.title = title
         self.abstract = abstract
@@ -284,15 +282,14 @@ class Map(ResourceBase, GXPMapBase):
 
         DEFAULT_MAP_CONFIG, DEFAULT_BASE_LAYERS = default_map_config(None)
 
-        _layers = []
+        _datasets = []
         for layer in layers:
-            if not isinstance(layer, Layer):
+            if not isinstance(layer, Dataset):
                 try:
-                    layer = Layer.objects.get(alternate=layer)
+                    layer = Dataset.objects.get(alternate=layer)
                 except ObjectDoesNotExist:
                     raise Exception(
-                        'Could not find layer with name %s' %
-                        layer)
+                        f'Could not find layer with name {layer}')
 
             if not user.has_perm(
                     'base.view_resourcebase',
@@ -302,20 +299,20 @@ class Map(ResourceBase, GXPMapBase):
                     'User %s tried to create a map with layer %s without having premissions' %
                     (user, layer))
             else:
-                _layers.append(layer)
+                _datasets.append(layer)
 
         # Set bounding box based on all layers extents.
         # bbox format: [xmin, xmax, ymin, ymax]
-        bbox = self.get_bbox_from_layers(_layers)
+        bbox = self.get_bbox_from_datasets(_datasets)
         self.set_bounds_from_bbox(bbox, self.projection)
 
         # Save the map in order to create an id in the database
         # used below for the maplayers.
         self.save()
 
-        if _layers and len(_layers) > 0:
+        if _datasets and len(_datasets) > 0:
             index = 0
-            for layer in _layers:
+            for layer in _datasets:
                 MapLayer.objects.create(
                     map=self,
                     name=layer.alternate,
@@ -339,13 +336,6 @@ class Map(ResourceBase, GXPMapBase):
         return self.__class__.__name__
 
     @property
-    def snapshots(self):
-        snapshots = MapSnapshot.objects.exclude(
-            user=None).filter(
-            map__id=self.map.id)
-        return [snapshot for snapshot in snapshots]
-
-    @property
     def is_public(self):
         """
         Returns True if anonymous (public) user can view map.
@@ -357,13 +347,13 @@ class Map(ResourceBase, GXPMapBase):
             obj=self.resourcebase_ptr)
 
     @property
-    def layer_group(self):
+    def dataset_group(self):
         """
         Returns layer group name from local OWS for this map instance.
         """
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
             from geonode.geoserver.helpers import gs_catalog, ogc_server_settings
-            lg_name = '%s_%d' % (slugify(self.title), self.id)
+            lg_name = f'{slugify(self.title)}_{self.id}'
             try:
                 return {
                     'catalog': gs_catalog.get_layergroup(lg_name),
@@ -378,7 +368,7 @@ class Map(ResourceBase, GXPMapBase):
             return None
 
     @deprecated(version='2.10.1', reason="APIs have been changed on geospatial service")
-    def publish_layer_group(self):
+    def publish_dataset_group(self):
         """
         Publishes local map layers as WMS layer group on local OWS.
         """
@@ -394,34 +384,34 @@ class Map(ResourceBase, GXPMapBase):
         if not self.is_public:
             return 'Only public maps can be saved as layer group.'
 
-        map_layers = MapLayer.objects.filter(map=self.id)
+        map_datasets = MapLayer.objects.filter(map=self.id)
 
-        # Local Group Layer layers and corresponding styles
+        # Local Group Dataset layers and corresponding styles
         layers = []
         lg_styles = []
-        for ml in map_layers:
+        for ml in map_datasets:
             if ml.local:
-                layer = Layer.objects.get(alternate=ml.name)
+                layer = Dataset.objects.get(alternate=ml.name)
                 style = ml.styles or getattr(layer.default_style, 'name', '')
                 layers.append(layer)
                 lg_styles.append(style)
-        lg_layers = [lyr.name for lyr in layers]
+        lg_datasets = [lyr.name for lyr in layers]
 
         # Group layer bounds and name
         lg_bounds = [str(coord) for coord in self.bbox]
-        lg_name = '%s_%d' % (slugify(self.title), self.id)
+        lg_name = f'{slugify(self.title)}_{self.id}'
 
         # Update existing or add new group layer
-        lg = self.layer_group
+        lg = self.dataset_group
         if lg is None:
             lg = GsUnsavedLayerGroup(
                 gs_catalog,
                 lg_name,
-                lg_layers,
+                lg_datasets,
                 lg_styles,
                 lg_bounds)
         else:
-            lg.layers, lg.styles, lg.bounds = lg_layers, lg_styles, lg_bounds
+            lg.layers, lg.styles, lg.bounds = lg_datasets, lg_styles, lg_bounds
         gs_catalog.save(lg)
         return lg_name
 
@@ -437,7 +427,7 @@ class MapLayer(models.Model, GXPLayerBase):
     and the file format to use for image tiles.
     """
 
-    map = models.ForeignKey(Map, related_name="layer_set", on_delete=models.CASCADE)
+    map = models.ForeignKey(Map, related_name="dataset_set", on_delete=models.CASCADE)
     # The map containing this layer
 
     stack_order = models.IntegerField(_('stack order'))
@@ -481,13 +471,13 @@ class MapLayer(models.Model, GXPLayerBase):
     # A group label to apply to this layer.  This affects the hierarchy displayed
     # in the map viewer's layer tree.
 
-    visibility = models.BooleanField(_('visibility'), default=True)
-    # A boolean value, true if this layer should be visible when the map loads.
-
     ows_url = models.URLField(_('ows URL'), null=True, blank=True)
     # The URL of the OWS service providing this layer, if any exists.
 
-    layer_params = models.TextField(_('layer params'))
+    visibility = models.BooleanField(_('visibility'), default=True)
+    # A boolean value, true if this layer should be visible when the map loads.
+
+    dataset_params = models.TextField(_('dataset params'))
     # A JSON-encoded dictionary of arbitrary parameters for the layer itself when
     # passed to the GXP viewer.
 
@@ -504,25 +494,25 @@ class MapLayer(models.Model, GXPLayerBase):
     local = models.BooleanField(default=False)
     # True if this layer is served by the local geoserver
 
-    def layer_config(self, user=None):
+    def dataset_config(self, user=None):
         # Try to use existing user-specific cache of layer config
         if self.id:
-            cfg = cache.get("layer_config" +
+            cfg = cache.get("dataset_config" +
                             str(self.id) +
                             "_" +
                             str(0 if user is None else user.id))
             if cfg is not None:
                 return cfg
 
-        cfg = GXPLayerBase.layer_config(self, user=user)
+        cfg = GXPLayerBase.dataset_config(self, user=user)
         # if this is a local layer, get the attribute configuration that
         # determines display order & attribute labels
-        if Layer.objects.filter(alternate=self.name).exists():
+        if Dataset.objects.filter(alternate=self.name).exists():
             try:
                 if self.local:
-                    layer = Layer.objects.get(store=self.store, alternate=self.name)
+                    layer = Dataset.objects.get(store=self.store, alternate=self.name)
                 else:
-                    layer = Layer.objects.get(
+                    layer = Dataset.objects.get(
                         alternate=self.name,
                         remote_service__base_url=self.ows_url)
                 attribute_cfg = layer.attribute_config()
@@ -545,22 +535,22 @@ class MapLayer(models.Model, GXPLayerBase):
             # Create temporary cache of maplayer config, should not last too long in case
             # local layer permissions or configuration values change (default
             # is 5 minutes)
-            cache.set("layer_config" +
+            cache.set("dataset_config" +
                       str(self.id) +
                       "_" +
                       str(0 if user is None else user.id), cfg)
         return cfg
 
     @property
-    def layer_title(self):
+    def dataset_title(self):
         title = None
         try:
             if self.local:
                 if self.store:
-                    title = Layer.objects.get(
+                    title = Dataset.objects.get(
                         store=self.store, alternate=self.name).title
                 else:
-                    title = Layer.objects.get(alternate=self.name).title
+                    title = Dataset.objects.get(alternate=self.name).title
         except Exception:
             title = None
         if title is None:
@@ -573,62 +563,44 @@ class MapLayer(models.Model, GXPLayerBase):
         try:
             if self.local:
                 if self.store:
-                    layer = Layer.objects.get(
+                    layer = Dataset.objects.get(
                         store=self.store, alternate=self.name)
                 else:
-                    layer = Layer.objects.get(alternate=self.name)
-                link = "<a href=\"%s\">%s</a>" % (
-                    layer.get_absolute_url(), layer.title)
+                    layer = Dataset.objects.get(alternate=self.name)
+                link = f"<a href=\"{layer.get_absolute_url()}\">{layer.title}</a>"
         except Exception:
             link = None
         if link is None:
-            link = "<span>%s</span> " % self.name
+            link = f"<span>{self.name}</span> "
         return link
+
+    @property
+    def get_legend(self):
+        try:
+            dataset_params = json.loads(self.dataset_params)
+
+            capability = dataset_params.get('capability', {})
+            # Use '' to represent default layer style
+            style_name = capability.get('style', '')
+            href = None
+            dataset_obj = Dataset.objects.filter(alternate=self.name).first()
+            if dataset_obj:
+                if ':' in style_name:
+                    style_name = style_name.split(':')[1]
+                elif dataset_obj.default_style:
+                    style_name = dataset_obj.default_style.name
+                href = dataset_obj.get_legend_url(style_name=style_name)
+                style = Style.objects.filter(name=style_name).first()
+                if style:
+                    # replace map-legend display name if style has a title
+                    style_name = style.sld_title or style_name
+            return {style_name: href}
+        except Exception as e:
+            logger.exception(e)
+            return None
 
     class Meta:
         ordering = ["stack_order"]
 
     def __str__(self):
-        return '%s?layers=%s' % (self.ows_url, self.name)
-
-
-def pre_delete_map(instance, sender, **kwrargs):
-    ct = ContentType.objects.get_for_model(instance)
-    OverallRating.objects.filter(
-        content_type=ct,
-        object_id=instance.id).delete()
-    remove_object_permissions(instance.get_self_resource())
-
-
-class MapSnapshot(models.Model):
-    map = models.ForeignKey(Map, related_name="snapshot_set", on_delete=models.CASCADE)
-    """
-    The ID of the map this snapshot was generated from.
-    """
-
-    config = models.TextField(_('JSON Configuration'))
-    """
-    Map configuration in JSON format
-    """
-
-    created_dttm = models.DateTimeField(auto_now_add=True)
-    """
-    The date/time the snapshot was created.
-    """
-
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, blank=True, null=True, on_delete=models.CASCADE)
-    """
-    The user who created the snapshot.
-    """
-
-    def json(self):
-        return {
-            "map": self.map.id,
-            "created": self.created_dttm.isoformat(),
-            "user": self.user.username if self.user else None,
-            "url": num_encode(self.id)
-        }
-
-
-signals.pre_delete.connect(pre_delete_map, sender=Map)
-signals.post_save.connect(resourcebase_post_save, sender=Map)
+        return f'{self.ows_url}?datasets={self.name}'

@@ -1,9 +1,41 @@
-from datetime import datetime, timedelta
-from unittest.mock import patch
+#########################################################################
+#
+# Copyright (C) 2020 OSGeo
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+#########################################################################
+import os
+import copy
+import shutil
+import zipfile
+import tempfile
 
-from geonode.br.management.commands.utils.utils import ignore_time
+from osgeo import ogr
+from unittest.mock import patch
+from datetime import datetime, timedelta
+
+from django.contrib.gis.geos import Polygon
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+
+from geonode.maps.models import Dataset
+from geonode.layers.models import Attribute
+from geonode.geoserver.helpers import set_attributes
 from geonode.tests.base import GeoNodeBaseTestSupport
-from geonode.utils import copy_tree
+from geonode.br.management.commands.utils.utils import ignore_time
+from geonode.utils import copy_tree, fixup_shp_columnnames, unzip_file
 
 
 class TestCopyTree(GeoNodeBaseTestSupport):
@@ -71,3 +103,119 @@ class TestCopyTree(GeoNodeBaseTestSupport):
         """
         copy_tree('/src', '/dst', ignore=ignore_time('>=', datetime.now().isoformat()))
         self.assertTrue(patch_shutil_copytree.called)
+
+
+class TestFixupShp(GeoNodeBaseTestSupport):
+    def test_fixup_shp_columnnames(self):
+        project_root = os.path.abspath(os.path.dirname(__file__))
+        dataset_zip = os.path.join(project_root, "data", "ming_female_1.zip")
+
+        self.failUnless(zipfile.is_zipfile(dataset_zip))
+
+        dataset_shp = unzip_file(dataset_zip)
+
+        expected_fieldnames = [
+            "ID", "_f", "__1", "__2", "m", "_", "_M2", "_M2_1", "l", "x", "y", "_WU", "_1",
+        ]
+        _, _, fieldnames = fixup_shp_columnnames(dataset_shp, "windows-1258")
+
+        inDriver = ogr.GetDriverByName("ESRI Shapefile")
+        inDataSource = inDriver.Open(dataset_shp, 0)
+        inLayer = inDataSource.GetLayer()
+        inLayerDefn = inLayer.GetLayerDefn()
+
+        self.assertEqual(inLayerDefn.GetFieldCount(), len(expected_fieldnames))
+
+        for i, fn in enumerate(expected_fieldnames):
+            self.assertEqual(inLayerDefn.GetFieldDefn(i).GetName(), fn)
+
+        inDataSource.Destroy()
+
+        # Cleanup temp dir
+        shp_parent = os.path.dirname(dataset_shp)
+        if shp_parent.startswith(tempfile.gettempdir()):
+            shutil.rmtree(shp_parent, ignore_errors=True)
+
+
+class TestSetAttributes(GeoNodeBaseTestSupport):
+
+    def setUp(self):
+        super().setUp()
+        # Load users to log in as
+        call_command('loaddata', 'people_data', verbosity=0)
+        self.user = get_user_model().objects.get(username='admin')
+
+    def test_set_attributes_creates_attributes(self):
+        """ Test utility function set_attributes() which creates Attribute instances attached
+            to a Dataset instance.
+        """
+        # Creating a dataset requires being logged in
+        self.client.login(username='norman', password='norman')
+
+        # Create dummy dataset to attach attributes to
+        _l = Dataset.objects.create(
+            owner=self.user,
+            name='dummy_dataset',
+            bbox_polygon=Polygon.from_bbox((-180, -90, 180, 90)),
+            srid='EPSG:4326')
+
+        attribute_map = [
+            ['id', 'Integer'],
+            ['date', 'IntegerList'],
+            ['enddate', 'Real'],
+            ['date_as_date', 'xsd:dateTime'],
+        ]
+
+        # attribute_map gets modified as a side-effect of the call to set_attributes()
+        expected_results = copy.deepcopy(attribute_map)
+
+        # set attributes for resource
+        set_attributes(_l, attribute_map.copy())
+
+        # 2 items in attribute_map should translate into 2 Attribute instances
+        self.assertEqual(_l.attributes.count(), len(expected_results))
+
+        # The name and type should be set as provided by attribute map
+        for a in _l.attributes:
+            self.assertIn([a.attribute, a.attribute_type], expected_results)
+
+        # GeoNode cleans up local duplicated attributes
+        for attribute in attribute_map:
+            field = attribute[0]
+            ftype = attribute[1]
+            if field:
+                la = Attribute.objects.create(dataset=_l, attribute=field)
+                la.visible = ftype.find("gml:") != 0
+                la.attribute_type = ftype
+                la.description = None
+                la.attribute_label = None
+                la.display_order = 0
+
+        # set attributes for resource
+        set_attributes(_l, attribute_map.copy())
+
+        # 2 items in attribute_map should translate into 2 Attribute instances
+        self.assertEqual(_l.attributes.count(), len(expected_results))
+
+        # The name and type should be set as provided by attribute map
+        for a in _l.attributes:
+            self.assertIn([a.attribute, a.attribute_type], expected_results)
+
+        # Test that deleted attributes from GeoServer gets deleted on GeoNode too
+        attribute_map = [
+            ['id', 'Integer'],
+            ['date_as_date', 'xsd:dateTime'],
+        ]
+
+        # attribute_map gets modified as a side-effect of the call to set_attributes()
+        expected_results = copy.deepcopy(attribute_map)
+
+        # set attributes for resource
+        set_attributes(_l, attribute_map.copy())
+
+        # 2 items in attribute_map should translate into 2 Attribute instances
+        self.assertEqual(_l.attributes.count(), len(expected_results))
+
+        # The name and type should be set as provided by attribute map
+        for a in _l.attributes:
+            self.assertIn([a.attribute, a.attribute_type], expected_results)

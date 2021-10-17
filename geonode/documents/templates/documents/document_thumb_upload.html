@@ -1,7 +1,8 @@
 {% extends "documents/document_upload_base.html" %}
-{% load staticfiles %}
+{% load static %}
 {% load bootstrap_tags %}
 {% load i18n %}
+{% load client_lib_tags %}
 
 {% block title %} {% trans "Upload Document's Thumbnail" %} - {{ block.super }} {% endblock %}
 
@@ -9,7 +10,7 @@
 
 {% block body_outer %}
   <div class="page-header">
-    <a href="{% url "document_browse" %}?limit={{ CLIENT_RESULTS_LIMIT }}" class="btn btn-primary pull-right">{% trans "Explore Documents" %}</a>
+    <a href="{% document_list_url %}" class="btn btn-primary pull-right">{% trans "Explore Documents" %}</a>
     <h2 class="page-title">{% trans "Upload Document's Thumbnail" %}</h2>
   </div>
 
@@ -47,25 +48,16 @@
           <div id="file-queue"></div>
           <div class="checkbox" style="display:none;" id="style_upload_form_check">
               {% trans "Is Upload Metadata XML Form" %} <input type="checkbox" name="style_upload_form" id="id_style_upload_form" checked="true"/>
-              <input type="text" name="layer_title" id="id_layer_title" value="{{ resource.alternate }}"/>
+              <input type="text" name="dataset_title" id="id_dataset_title" value="{{ resource.alternate }}"/>
           </div>
         </section>
 
         <section>
           <a href="{% url "document_thumb_upload" resource.id %}" id="clear-button" class="btn btn-default">{% trans "Clear" %}</a>
-          <a href="#" id="upload-button" class="btn btn-danger">{% trans "Upload files" %}</a>
+          <a href="#" id="upload-button" class="btn btn-primary">{% trans "Upload files" %}</a>
         </section>
         </div>
 
-        {% endblock %}
-
-        {% block sidebar %}
-            <div class="col-md-4">
-              <h3>{% trans "Permissions"  %}</h3>
-              <form id="permission_form">
-                {% include "_permissions.html" %}
-              </form>
-            </div>
         {% endblock %}
     </div>
 </div>

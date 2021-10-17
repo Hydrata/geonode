@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -22,12 +21,11 @@ import os
 import json
 
 # import needed to resolve model filters:
-from django.db.models import Q
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.core.management.base import BaseCommand, CommandError
 
 from geonode.maps.models import Map
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.documents.models import Document
 
 
@@ -45,8 +43,8 @@ class Command(BaseCommand):
 
         parser.add_argument(
             '-l',
-            '--layer_filters',
-            dest='layer_filters',
+            '--dataset_filters',
+            dest='dataset_filters',
             nargs='+',
             required=False,
         )
@@ -68,18 +66,20 @@ class Command(BaseCommand):
         )
 
     def handle(self, **options):
-        layer_filters = options.get('layer_filters')
+        dataset_filters = options.get('dataset_filters')
         map_filters = options.get('map_filters')
         document_filters = options.get('document_filters')
 
         config_path = options.get('config_path')
 
         # check argument set
-        if all(config is None for config in [layer_filters, map_filters, document_filters, config_path]):
-            raise CommandError("No configuration provided. Please specify any of the following arguments: '-l', '-m', '-d', '-c'.")
+        if all(config is None for config in {dataset_filters, map_filters, document_filters, config_path}):
+            raise CommandError(
+                "No configuration provided. Please specify any of the following arguments: '-l', '-m', '-d', '-c'.")
 
-        if any([layer_filters, map_filters, document_filters]) and config_path:
-            raise CommandError("Too many configuration options provided. Please use either '-c' or '-l', '-m', '-d' arguments.")
+        if any([dataset_filters, map_filters, document_filters]) and config_path:
+            raise CommandError(
+                "Too many configuration options provided. Please use either '-c' or '-l', '-m', '-d' arguments.")
 
         # check config_file, if it exists
         if config_path:
@@ -102,29 +102,37 @@ class Command(BaseCommand):
                         # or 'filters' is not set in config OR it is not an JSON object
                         or not isinstance(config.get('filters'), dict)
                         # or all filters are empty
-                        or not any([config.get('filters').get('layer'), config.get('filters').get('map'), config.get('filters').get('document')])
+                        or not any(
+                            [
+                                config.get('filters').get('dataset'),
+                                config.get('filters').get('map'),
+                                config.get('filters').get('document')
+                            ])
                 ):
                     print('Nothing to be done... exiting delete_resources command.')
                     return
 
             # override filters variables with configuration file data
-            layer_filters = config.get('filters').get('layer')
+            dataset_filters = config.get('filters').get('dataset')
             map_filters = config.get('filters').get('map')
             document_filters = config.get('filters').get('document')
 
         # remove layers
-        if layer_filters:
+        if dataset_filters:
 
-            if '*' in layer_filters:
-                layers_to_delete = Layer.objects.all()
+            if '*' in dataset_filters:
+                layers_to_delete = Dataset.objects.all()
             else:
-                layers_q_expressions = [eval(expr) for expr in layer_filters]
-                layers_to_delete = Layer.objects.filter(*layers_q_expressions)
+                layers_q_expressions = [eval(expr) for expr in dataset_filters]
+                layers_to_delete = Dataset.objects.filter(*layers_q_expressions)
 
             for layer in layers_to_delete:
                 print(f'Deleting layer "{layer.name}" with ID: {layer.id}')
-                with transaction.atomic():
-                    layer.delete()
+                try:
+                    with transaction.atomic():
+                        layer.delete()
+                except IntegrityError:
+                    raise
 
         if map_filters:
 
@@ -136,7 +144,7 @@ class Command(BaseCommand):
 
             for map in maps_to_delete:
                 print(f'Deleting map "{map.title}" with ID: {map.id}')
-                map.layer_set.all().delete()
+                map.dataset_set.all().delete()
                 map.delete()
 
         if document_filters:

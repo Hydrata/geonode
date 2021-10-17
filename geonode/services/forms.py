@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -55,7 +54,7 @@ class CreateServiceForm(forms.Form):
             (enumerations.GN_WMS, _('GeoNode (Web Map Service)')),
             # (enumerations.GN_CSW, _('GeoNode (Catalogue Service)')),
             # (enumerations.CSW, _('Catalogue Service')),
-            (enumerations.REST_MAP, _('ArcGIS REST MapServer')),
+            # (enumerations.REST_MAP, _('ArcGIS REST MapServer')),
             # (enumerations.REST_IMG, _('ArcGIS REST ImageServer')),
             # (enumerations.OGP, _('OpenGeoPortal')),
             # (enumerations.HGL, _('Harvard Geospatial Library')),
@@ -75,7 +74,7 @@ class CreateServiceForm(forms.Form):
 
     def clean(self):
         """Validates form fields that depend on each other"""
-        super(CreateServiceForm, self).clean()
+        super().clean()
         url = self.cleaned_data.get("url")
         service_type = self.cleaned_data.get("type")
         if url is not None and service_type is not None:
@@ -87,10 +86,9 @@ class CreateServiceForm(forms.Form):
                     _("Could not connect to the service at %(url)s"),
                     params={"url": url}
                 )
-            if not service_handler.has_resources():
+            if not service_handler.probe():
                 raise ValidationError(
-                    _("Could not find importable resources for the service "
-                      "at %(url)s"),
+                    _("Could not connect to the service at %(url)s"),
                     params={"url": url}
                 )
             elif service_type not in (enumerations.AUTO, enumerations.OWS):

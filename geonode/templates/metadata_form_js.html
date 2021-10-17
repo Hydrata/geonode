@@ -1,5 +1,5 @@
 {% load i18n %}
-{% load staticfiles %}
+{% load static %}
 <script type="text/javascript">
 {% autoescape off %}
     var select_button_active = false;
@@ -23,6 +23,7 @@
     var is_advanced = (metadata_uri.match(/metadata_advanced/i) != null);
     var is_category_mandatory = {% if TOPICCATEGORY_MANDATORY %}true{% else %}false{% endif %};
     var is_group_mandatory = {% if GROUP_MANDATORY_RESOURCES %}true{% else %}false{% endif %};
+    var ui_mandatory_fields = {{ UI_MANDATORY_FIELDS }};
 
     var updateWizard = function() {
       var activeTab = $("#edit-metadata .wizard--progress li.is-active");
@@ -63,33 +64,67 @@
         animation: true,
         content: tooltipContent
       });
-
+    {% block completeness  %}
     var updateCompleteness = function(completeness) {
+        {% block extendcompleteness %}{% endblock extendcompleteness %}
       $('#profileCompleteness .progress-bar').html(parseFloat(((completeness)*100).toFixed(0)) + ' %').width(parseFloat(((completeness)*100).toFixed(2)) + '%');
       $('#profileCompleteness .completed').toggle(completeness === 1);
       $('#profileCompleteness .not-completed').toggle(completeness !== 1);
+      
       var mandatoryMissing = $('#mandatory').find('.input-empty:not([class^="select2"])').length > 0;
           if (mandatoryMissing) {
+            var not_tinymce = true
             var inputs = $('#mandatory').find('.input-empty:not([class^="select2"])');
             var empty = inputs.length;
             for (var i=0; i<inputs.length; i++) {
-              if (typeof inputs[i].value !== undefined && inputs[i].value !== '') {
+              if (tinymce.get(inputs[i].id) !== null && tinymce.get(inputs[i].id).getContent().length == 0) {
+                  empty++;
+                  not_tinymce = false
+              } else if (typeof inputs[i].value !== undefined && inputs[i].value !== '' && not_tinymce) {
                 empty--;
               }
             }
             mandatoryMissing = empty > 0;
           }
+        var imgMissing = $('img#image').attr('src');
+        if (imgMissing && imgMissing.includes('missing_thumb')) {
+            mandatoryMissing = true
+        }
       var advancedMissing = $('#advanced').find('.input-empty').length > 0;
           if (advancedMissing) {
+            var not_tinymce = true
             var inputs = $('#advanced').find('.input-empty');
+            var empty = inputs.length;
+            for (var i=0; i<inputs.length; i++) {
+              if (tinymce.get(inputs[i].id) !== null && tinymce.get(inputs[i].id).getContent().length == 0) {
+                  empty++;
+                  not_tinymce = false
+              } else if (typeof inputs[i].value !== undefined && inputs[i].value !== '' && not_tinymce) {
+                empty--;
+              }
+            }
+            advancedMissing = empty > 0;
+          }
+
+        {% if UI_REQUIRED_FIELDS %}
+         var metadataMissing = $('#ownership').find('.input-empty').length > 0;
+          if (metadataMissing) {
+            var inputs = $('#ownership').find('.input-empty');
             var empty = inputs.length;
             for (var i=0; i<inputs.length; i++) {
               if (typeof inputs[i].value !== undefined && inputs[i].value !== '') {
                 empty--;
               }
             }
-            advancedMissing = empty > 0;
+            metadataMissing = empty > 0;
           }
+          $('#completeness-hints .metadata-hint')
+            .toggleClass('progress-bar-danger', metadataMissing)
+            .toggleClass('progress-bar-success', !metadataMissing)
+            .attr('title', metadataMissing ? gettext("some schema mandatory fields are missing") : gettext("Metadata Schema mandatory fields completed") )
+            .tooltip('fixTitle');
+        {% endif %}
+
       $('#completeness-hints .mandatory-hint')
         .toggleClass('progress-bar-danger', mandatoryMissing)
         .toggleClass('progress-bar-success', !mandatoryMissing)
@@ -100,7 +135,6 @@
         .toggleClass('progress-bar-success', !advancedMissing)
         .attr('title', advancedMissing ? gettext("some schema mandatory fields are missing") : gettext("Metadata Schema mandatory fields completed") )
         .tooltip('fixTitle');
-
         //done button tooltip
         if(completeness === 1 && $('.metadata-edit-done').css('opacity')+"" === "0" && !tooltipShown && !gotIt) {
           tooltipShown = true;
@@ -118,6 +152,7 @@
         // show/hide done button
         $('.metadata-edit-done').animate(completeness === 1 ? {width: '100px', opacity: 1} : {width: 0, opacity: 0});
     }
+    {% endblock completeness  %}
 
     function getTab(number) {
       var activeTab = $("#edit-metadata .wizard--progress li.is-active");
@@ -168,10 +203,11 @@
                 
                 // Removes the second help icon from select2 fields
                 if (help_text) {
+                    var spanPopoverText = $('<span>', { class: 'external-popover', 'data-content': help_text  }).append("<strong><i class='fa fa fa-question-circle fa-1x'></i></strong>");
                     $(this)
                         .closest("div")
                         .children("span:not(.input-group):not(.select2)")  // Removes the second help icon for select2
-                        .append("<span class='external-popover' data-content='" + help_text + "'><strong><i class='fa fa fa-question-circle fa-1x'></i></strong></span>");
+                        .append(spanPopoverText);
             }});
 
         $('.external-popover').each(function(){
@@ -188,21 +224,17 @@
             $(this).text(changeTxt.reverse()[0]);
             $("#preview_map, #preview_image").toggle(1000);
             $("#set_thumbnail").toggle();
-            {% if layer_form %}
-            $('#preview_image_src').attr('src', '{{ layer_form.thumbnail_url.value }}');
+            {% if dataset_form %}
+            $('#preview_image_src').attr('src', '{{ dataset_form.thumbnail_url.value }}');
             {% elif map_form %}
             $('#preview_image_src').attr('src', '{{ map_form.thumbnail_url.value }}');
             {% endif %}
         });
     });
 
-    $(document).ready(function() {
-        var prevNum = 0, totalNum = 0;
-        var empty = 0;
-        $('#completeness-hints .mandatory-hint').click(getTab.bind(null, 1));
-        $('#completeness-hints .advanced-hint').click(getTab.bind(null, 2));
-
-        // set proper classes to count empty fields and display them
+    var prevNum = 0, totalNum = 0;
+    var empty = 0;
+    // set proper classes to count empty fields and display them
         var setInputEmpty = function( target, empty ) {
           if($(target).hasClass('value-select')) {
             // tkeywords
@@ -211,28 +243,40 @@
           } else if( !$(target).hasClass('autocomplete') ){
             // display error status for token fields if not completed
             $(target).toggleClass("input-empty", empty);
+            if (target.id.startsWith('id_tkeywords')) {
+                $("#" + target.id).closest("p").toggleClass("has-error", empty);   
+              }
+          }
+          var imgMissing = $('img#image').attr('src');
+          if (imgMissing && !imgMissing.includes('missing_thumb')) {
+              $('input#id_crop_file').removeClass("input-empty");
+              $('input#id_crop_file').parent().find(".mandatory-warning").remove();
           }
 
           if(target.id === 'id_resource-keywords') {
             $(target).siblings('span').toggleClass('has-error', empty);
             $(target).toggleClass("input-empty", empty);
           }
-
+        {% block target %}
           if(target.id === 'category_form' ||
              target.id === 'id_resource-regions' ||
-             target.id === 'id_resource-group'
+             target.id === 'id_resource-group' || 
+             target.id === 'id_resource-date' ||
+             target.id === 'id_resource-links' || {{UI_REQUIRED_FIELDS}}.includes(target.id)
           ) {
               // group selector
               $(target).closest('#basicGroupInfo').toggleClass('has-error', empty);
 
               // category selector
               $(target).closest('#basicCategoryInfo').toggleClass('has-error', empty);
+              $(target).closest('#req_item').toggleClass('has-error', empty);
 
               // regions container
               $(target).closest('#regions_multiselect_container').toggleClass('has-error', empty);
               $(target).toggleClass("input-empty", empty);
           }
 
+        {% endblock target %}
           // bootstrap-select copies the select's classes, so it have to be removed
           if( $( '.bootstrap-select' ).hasClass("input-empty") ) {
             $( '.bootstrap-select' ).toggleClass("input-empty");
@@ -280,42 +324,73 @@
         }
 
         var isMandatoryField = function (el) {
-          if(el.id.indexOf("resource-constraints") >= 0) {
-            if(otherRestrictionsSelected()) {
-                return true;
+            var is_mandatory = false;
+
+            is_mandatory = ui_mandatory_fields.some(function(field){
+                return el.id == field;
+            })
+
+            if (el.id == 'id_resource-group') {
+                if (is_group_mandatory) {
+                    is_mandatory = true;
+                }
             }
-            return false;
-          }
 
-          var is_mandatory = (el.id.indexOf("autocomplete") < 0 &&
-                        (typeof $(el).attr("class") !== 'undefined' && $(el).attr("class").indexOf("select2") < 0) &&
-                        !$(el).hasClass('value-select') &&
-                        el.type !== 'radio' &&
-                        el.type !== 'button');
+            // Workaround for Thesauri
+            if (el.id.startsWith('id_tkeywords') && $(el).hasClass('treq')) {
+                is_mandatory = true;
+            } else if (el.id.startsWith('id_tkeywords') && !$(el).hasClass('treq')) {
+                is_mandatory = false;
+            }
+
             return is_mandatory;
-        }
+        };
 
+    {% block onInputChange %}
         var onInputChange = function(e){
+            var e_target = null;
+            var e_target_value = null;
+            if (e.target.id == 'tinymce') {
+                e_target = $('#' + $(e.target).data().id)[0];
+                e_target_value = tinymce.get($(e.target).data().id).getContent();
+            }
+            else {
+                e_target = e.target;
+                e_target_value = e.target.value;
+            }
             toggleRestrictionsConstraints(e);
-
-            if(e.target.value !== undefined && e.target.value.trim() === ''){
-                if(!$(e.target).hasClass("input-empty")){
+            if(e_target_value !== undefined && e_target_value.trim() === ''){
+                if(!$(e_target).hasClass("input-empty")){
                     if(isMandatoryField(this)) {
-                        setInputEmpty(e.target, true);
-                        if(!!$(this).closest('#mdinfo').length) {
-                            $(e.target).parent().append(gettext("<p class='xxs-font-size mandatory-warning'>&nbsp;&nbsp;&nbsp;<strong>{% trans "* Field declared Mandatory by the Metadata Schema" %}</strong></p>"));
+                        setInputEmpty(e_target, true);
+                        var mandatoryWarning = "<p class='xxs-font-size mandatory-warning'>&nbsp;&nbsp;&nbsp;<strong>{% trans "* Field declared Mandatory by the Metadata Schema" %}</strong></p>"
+                        if (!!$(this).closest('.date').length) {
+                            $(e_target).parent().parent().append(gettext(mandatoryWarning));
+                        } else if (!!$(this).closest('.check-select').length ) {
+                            $(e_target).parent().parent().append(gettext(mandatoryWarning));
+                        } else if (!!$(this).closest('#mdinfo').length || !!$(this).closest('#basicDescriptiveInfo').length || !!$(this).closest('#tadv_req').length || !!$(this).closest('#adv_req').length ) {
+                            $(e_target).parent().append(gettext(mandatoryWarning));
+                        } else if (e.target.id == 'tinymce') {
+                            $(e_target).parent().append(gettext(mandatoryWarning));
+
                         }
                         empty++;
                     }
                 }
             }
             else {
-                if($(e.target).hasClass("input-empty")) {
+                if($(e_target).hasClass("input-empty")) {
+                    console.log(e_target);
                     if(isMandatoryField(this)) {
                         empty--;
                     }
-                    setInputEmpty(e.target, false);
-                    $(e.target).parent().find(".mandatory-warning").remove();
+                    setInputEmpty(e_target, false);
+                    if (!!$(e_target).closest('.date').length) { 
+                        $(e_target).parent().parent().find(".mandatory-warning").remove();
+                    } else {
+                        $(e_target).parent().find(".mandatory-warning").remove();
+                    }
+                    
                 }
             }
 
@@ -330,14 +405,42 @@
                 }
             }
         };
+        {% endblock onInputChange %}
 
-        $('#category_form').change(onInputChange).change();
-        $('#id_resource-group').change(onInputChange).change();
-        document.querySelector('select[name="resource-keywords"]').onchange=onInputChange
+    $(document).ready(function() {
+        {% block hints %}
+
+        $('#completeness-hints .mandatory-hint').click(getTab.bind(null, 1));
+        $('#completeness-hints .advanced-hint').click(getTab.bind(null, 2));
+        {% endblock hints %}
+
+        
+        
+        
+        {% block trigger_onInputChange %}
+
+        {{UI_REQUIRED_FIELDS}}.forEach(element => $('#' + element).change(onInputChange).change());
+
+        ui_mandatory_fields.forEach(function(field){
+            $('#'+field).change(onInputChange).change();
+        })
+
+        var selection = document.querySelector('select[name="resource-keywords"]');
+        if (selection  !== null) {
+            selection.onchange=onInputChange
+        }
+        
+        {{REQ_THESAURI}}.forEach(element => document.querySelector('select[name="'+ element + '"]').onchange=onInputChange);
+        
+        // workaround to trigger the change in advanced metadata editing
+        // otherwise will remain not-required untill a change on the item
+        for (item in {{REQ_THESAURI}}) {
+            $("#id_" + {{REQ_THESAURI}}[item]).trigger("change");
+        }
 
         $('#id_resource-regions').change(onInputChange).change();
-$('#id_resource-temporal_extent_end').on('blur', function() {$(this).change(onInputChange).change();})
-$('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(onInputChange).change();})
+        $('#id_resource-temporal_extent_end').on('blur', function() {$(this).change(onInputChange).change();})
+        $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(onInputChange).change();})
         $('#mandatory').find(":input:not(.value-select):not(.autocomplete)").each(function(){
             if(isMandatoryField(this)) {
                 prevNum++;
@@ -365,6 +468,7 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
             }
         });
 
+        {% endblock trigger_onInputChange %}
         // Dataset attributes sorting
         $(document).ready(function() {
             //Helper function to keep table row from collapsing when being sorted
@@ -438,7 +542,7 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
               ) {
                 $('#group_mandatoryDialog').modal();
             } else {
-                $('#preview_pleaseWaitDialog').modal();
+                validateRequiredInput()
             }
         });
 
@@ -460,9 +564,25 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
               ) {
                 $('#group_mandatoryDialog').modal();
             } else {
-                $('#preview_pleaseWaitDialog').modal();
+                validateRequiredInput()
             }
         });
+        
+        function validateRequiredInput() {
+            var errors = ['{% trans "Following items are required:" %}']
+            $( ':input[required]').each( function () {
+                if ( this.value.trim() == '' ) {
+                    errors.push(this.id)
+                }
+            });
+            if (errors.length > 1) {
+                console.error("Following items are required: " + errors)
+                $(".general_errors").find("p").html(errors.join('<br>'));
+                $('#error_mandatoryDialog').modal();
+            } else {
+                $('#preview_pleaseWaitDialog').modal();
+            }
+        }
 
         $('#btn_upd_md_done').click(function(){
             if
@@ -488,8 +608,19 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
             }
         });
 
-        $('#preview_tab').on('show.bs.tab', function(){
-            if
+        $('#preview_tab').on('show.bs.tab', function(e){
+            var errors = ['{% trans "Please, fill the following items before clicking on preview:" %}<br>']
+                $( ':input[required]').each( function () {
+                    if ( this.value.trim() == '' ) {
+                        errors.push(this.id)
+                    }
+                });
+            if (errors.length > 1) {
+	                e.preventDefault();
+                    console.error("Please, fill the following items before clicking on preview: " + errors)
+                    $(".general_errors").find("p").html(errors.join('<br>'));
+                    $('#error_mandatoryDialog').modal();
+                } else if
             ( is_category_mandatory &&
                 (
                     (!is_advanced && $('#category_form').hasClass("input-empty")) ||
@@ -597,7 +728,7 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                             if(xhr.responseJSON && xhr.responseJSON['errors']) {
                                 var errors = "<ul>";
                                 for(error in xhr.responseJSON['errors']) {
-                                    errors += "<li>" + error + ": " + xhr.responseJSON['errors'][error][0] + "</li>";
+                                    errors += "<li>" + error + ": " + xhr.responseJSON['errors'][error] + "</li>";
                                 }
                                 errors += "</ul>";
                                 $("#preview_errorDialog .modal-body").html(errors);
@@ -621,7 +752,13 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                           $('#preview_pleaseWaitDialog').modal('hide');
                           if(textStatus === 'success' && metadata_update_done && !metadata_preview) {
                               if(new RegExp(".*/metadata$").test(e.target.action)) {
-                                  window.location.replace(e.target.action.replace('/metadata',''));
+                                  $.ajax({
+                                    type: "POST",
+                                    url: "{% url 'metadata_update_redirect' %}",
+                                    data: { url: e.target.action },
+                                    }).done(function(redirect_url){
+                                        window.location.replace(redirect_url)
+                                     })
                               } else if(new RegExp(".*/"+metadata_uri+"$").test(e.target.action)) {
                                   window.location.replace(e.target.action.replace('/'+metadata_uri,''));
                               }
@@ -660,12 +797,11 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
         
         var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
         $.ajax({
-            url: '/h_keywords_api',
+            url: {% url 'h_keywords_api' %},
             params: params,
             success: function(data) {
                 data = JSON.parse(data)
                 var kws = parseKeywords(data);
-
                 {% if freetext_readonly %}
                     $('#id_resource-keywords').tokenfield({
                         createTokensOnBlur: true,
@@ -684,7 +820,6 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                         if(!exists) {
                             event.preventDefault(); //prevents creation of token
                         }
-
                         var existingTokens = $(this).tokenfield('getTokens');
                         $.each(existingTokens, function(index, token) {
                             if (token.value === event.attrs.value)
@@ -714,7 +849,6 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                         });
                     });
                 {% endif %}
-
                 if (window.location.href.match('/metadata_advanced$')) {
                     if (!select_button_active) {
                         const select_button = $('<button id="id_freetext_keyword_select" class="btn btn-primary">Select</button>');
@@ -725,7 +859,6 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                     $('#id_freetext_keyword_select').click(function() {
                         $('#id_resource-keywords-tokenfield').blur().focus();
                     });
-
                     const resource_group = $('#id_resource-group');
                     resource_group.empty();
                     resource_group.append('<option value="">-----</option>');
@@ -741,7 +874,6 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                         {% endif %}
                     {% endfor %}
                 }
-
                 $('#treeview').treeview({
                     color: "#428bca",
                     expandIcon: "fa fa-folder",
@@ -767,7 +899,6 @@ $('#id_resource-temporal_extent_start').on('blur', function() {$(this).change(on
                         // $('#treeview-toggle').click();
                     }
                 });
-
                 $('#treeview-toggle').click((e, value) => {
                 $('#treeview').toggle();
                 var icon = $(this).find('i');

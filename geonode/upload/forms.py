@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -24,21 +23,12 @@ from django import forms
 from django.core.exceptions import ValidationError
 
 from .. import geoserver
-from .. import qgis_server
 from ..utils import check_ogc_backend
 from ..layers.forms import JSONField
 
-from .models import UploadFile
 from .upload_validators import validate_uploaded_files
 
 logger = logging.getLogger(__name__)
-
-
-class UploadFileForm(forms.ModelForm):
-
-    class Meta:
-        model = UploadFile
-        fields = '__all__'
 
 
 class LayerUploadForm(forms.Form):
@@ -51,8 +41,6 @@ class LayerUploadForm(forms.Form):
 
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         sld_file = forms.FileField(required=False)
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        qml_file = forms.FileField(required=False)
 
     time = forms.BooleanField(required=False)
 
@@ -67,7 +55,7 @@ class LayerUploadForm(forms.Form):
     time_presentation_reference_value = forms.CharField(required=False)
 
     abstract = forms.CharField(required=False)
-    layer_title = forms.CharField(required=False)
+    dataset_title = forms.CharField(required=False)
     permissions = JSONField()
 
     metadata_uploaded_preserve = forms.BooleanField(required=False)
@@ -84,13 +72,11 @@ class LayerUploadForm(forms.Form):
     # Adding style file based on the backend
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         spatial_files.append('sld_file')
-    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-        spatial_files.append('qml_file')
 
     spatial_files = tuple(spatial_files)
 
     def clean(self):
-        cleaned = super(LayerUploadForm, self).clean()
+        cleaned = super().clean()
         uploaded_files = self._get_uploaded_files()
         valid_extensions = validate_uploaded_files(
             cleaned=cleaned,
@@ -123,7 +109,7 @@ class TimeForm(forms.Form):
         self._time_names = kwargs.pop('time_names', None)
         self._text_names = kwargs.pop('text_names', None)
         self._year_names = kwargs.pop('year_names', None)
-        super(TimeForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._build_choice('time_attribute', self._time_names)
         self._build_choice('end_time_attribute', self._time_names)
         self._build_choice('text_attribute', self._text_names)

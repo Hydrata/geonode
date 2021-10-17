@@ -32,34 +32,17 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.db.models import Q
 
-from geonode.base.auth import (get_or_create_token,
-                               delete_old_tokens,
-                               set_session_token,
-                               remove_session_token)
+from geonode.base.auth import (
+    get_or_create_token,
+    delete_old_tokens,
+    set_session_token,
+    remove_session_token)
 
-from geonode.groups.models import GroupProfile
-from geonode.groups.conf import settings as groups_settings
 from geonode.notifications_helper import send_notification
 
 from .adapters import get_data_extractor
 
 logger = logging.getLogger(__name__)
-
-
-def _add_user_to_registered_members(user):
-    if groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_NAME:
-        group_name = groups_settings.REGISTERED_MEMBERS_GROUP_NAME
-        groupprofile = GroupProfile.objects.filter(slug=group_name).first()
-        if groupprofile:
-            groupprofile.join(user)
-
-
-def _remove_user_from_registered_members(user):
-    if groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_NAME:
-        group_name = groups_settings.REGISTERED_MEMBERS_GROUP_NAME
-        groupprofile = GroupProfile.objects.filter(slug=group_name).first()
-        if groupprofile:
-            groupprofile.leave(user)
 
 
 def do_login(sender, user, request, **kwargs):
@@ -78,9 +61,6 @@ def do_login(sender, user, request, **kwargs):
             logger.debug(tb)
 
         set_session_token(request.session, token)
-
-        if groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_AT == 'login':
-            _add_user_to_registered_members(user)
 
 
 def do_logout(sender, user, request, **kwargs):
@@ -108,7 +88,7 @@ def update_user_email_addresses(sender, **kwargs):
             EmailAddress.objects.add_email(
                 request=None, user=user, email=sociallogin_email, confirm=False)
         except IntegrityError:
-            logging.exception(msg="Could not add email address {} to user {}".format(sociallogin_email, user))
+            logging.exception(msg=f"Could not add email address {sociallogin_email} to user {user}")
 
 
 def notify_admins_new_signup(sender, **kwargs):
@@ -119,26 +99,29 @@ def notify_admins_new_signup(sender, **kwargs):
         extra_context={"from_user": kwargs["user"]}
     )
 
-    if groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_AT == 'registration':
-        _add_user_to_registered_members(kwargs["user"])
-
 
 def profile_post_save(instance, sender, **kwargs):
     """
-    Make sure the user belongs by default to the anonymous group.
-    This will make sure that anonymous permissions will be granted to the new users.
+    Make sure the user belongs by default to the anonymous and contributors groups.
+    This will make sure that anonymous and contributors permissions will be granted to the new users.
     """
     from django.contrib.auth.models import Group
-    anon_group, created = Group.objects.get_or_create(name='anonymous')
-    instance.groups.add(anon_group)
+    from geonode.groups.conf import settings as groups_settings
 
-    if groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_AT == 'activation':
-        created = kwargs.get('created', False)
-        became_active = instance.is_active and (not instance._previous_active_state or created)
-        if became_active:
-            _add_user_to_registered_members(instance)
-        elif not instance.is_active:
-            _remove_user_from_registered_members(instance)
+    created = kwargs.get('created', False)
+
+    if created:
+        anon_group, _ = Group.objects.get_or_create(name='anonymous')
+        instance.groups.add(anon_group)
+        is_anonymous = instance.username == 'AnonymousUser'
+
+        if not is_anonymous:
+            if Group.objects.filter(name='contributors').count() and not (instance.is_staff or instance.is_superuser):
+                cont_group = Group.objects.get(name='contributors')
+                instance.groups.add(cont_group)
+            if Group.objects.filter(name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME).count():
+                registeredmembers_group = Group.objects.get(name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME)
+                instance.groups.add(registeredmembers_group)
 
     # do not create email, when user-account signup code is in use
     if getattr(instance, '_disable_account_creation', False):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -20,33 +19,21 @@
 
 """signal handlers for geonode.services"""
 
-import re
 import logging
 
 from django.dispatch import receiver
 from django.db.models import signals
 
-from ..layers.models import Layer
-
 from .models import Service
-from .models import HarvestJob
 
 logger = logging.getLogger(__name__)
 
 
-@receiver(signals.post_delete, sender=Layer)
-def remove_harvest_job(sender, **kwargs):
-    """Remove a Layer's harvest job so that it may be re-imported later."""
-    layer = kwargs["instance"]
-    if layer.remote_service is not None:
-        resource_id = layer.alternate.split("-")[0] if re.match(r'^[0-9]+-', layer.alternate) else layer.alternate
-        if HarvestJob.objects.filter(resource_id=resource_id):
-            job = HarvestJob.objects.filter(resource_id=resource_id).get(
-                service=layer.remote_service)
-            logger.debug("job: {}".format(job.id))
-            job.delete()
-    else:
-        pass  # layer was not harvested from a service, we've nothing to do
+@receiver(signals.post_delete, sender=Service)
+def remove_harvesters(instance, **kwargs):
+    """Remove a Service's harvesters and related resources."""
+    if instance.harvester:
+        instance.harvester.delete()
 
 
 @receiver(signals.post_save, sender=Service)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -19,23 +18,34 @@
 #########################################################################
 
 """celery tasks for geonode.layers."""
-
 from geonode.celery_app import app
 from celery.utils.log import get_task_logger
 
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
+from geonode.resource.manager import resource_manager
 
 logger = get_task_logger(__name__)
 
 
-@app.task(bind=True, queue='cleanup', expires=300)
-def delete_layer(self, layer_id):
+@app.task(
+    bind=True,
+    name='geonode.layers.tasks.delete_dataset',
+    queue='cleanup',
+    expires=600,
+    acks_late=False,
+    autoretry_for=(Exception, ),
+    retry_kwargs={'max_retries': 3, 'countdown': 10},
+    retry_backoff=True,
+    retry_backoff_max=700,
+    retry_jitter=True)
+def delete_dataset(self, dataset_id):
     """
     Deletes a layer.
     """
     try:
-        layer = Layer.objects.get(id=layer_id)
-    except Layer.DoesNotExist:
+        layer = Dataset.objects.get(id=dataset_id)
+    except Dataset.DoesNotExist:
+        logger.warning(f"Layers {dataset_id} does not exist!")
         return
-    logger.debug('Deleting Layer {0}'.format(layer))
-    layer.delete()
+    logger.debug(f'Deleting Dataset {layer}')
+    resource_manager.delete(uuid=layer.uuid, instance=layer)

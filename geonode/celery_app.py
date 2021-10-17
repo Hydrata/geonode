@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -17,8 +16,6 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-
 import os
 import logging
 
@@ -38,6 +35,7 @@ def _log(msg, *args):
 # pickle the object when using Windows.
 app.config_from_object('django.conf:settings', namespace="CELERY")
 app.autodiscover_tasks()
+app.autodiscover_tasks(packages=["geonode.harvesting.harvesters"])
 
 """ CELERAY SAMPLE TASKS
 @app.on_after_configure.connect
@@ -48,11 +46,17 @@ def setup_periodic_tasks(sender, **kwargs):
     # Calls test('world') every 30 seconds
     sender.add_periodic_task(30.0, test.s('world'), expires=10)
 
-@app.task
+@app.task(
+    bind=True,
+    name='{{project_name}}.test',
+    queue='default')
 def test(arg):
     _log(arg)
 
-@app.task(bind=True)
+@app.task(
+    bind=True,
+    name='{{project_name}}.debug_task',
+    queue='default')
 def debug_task(self):
-    _log("Request: {!r}".format(self.request))
+    _log(f"Request: {self.request}")
 """

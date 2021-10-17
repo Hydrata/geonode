@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,34 +17,43 @@
 #
 #########################################################################
 
-from django.contrib.staticfiles.testing import StaticLiveServerTestCase
-from django.test import Client
-from selenium import webdriver
-from unittest import TestCase as StandardTestCase
+import mock
+import logging
 
+from flaky import flaky
+from selenium import webdriver
+from urllib.error import HTTPError
+from collections import namedtuple
+from arcrest import MapService as ArcMapService
+from unittest import TestCase as StandardTestCase
+from owslib.wms import WebMapService as OwsWebMapService
+
+from django.test import Client
 from django.urls import reverse
+from django.db.utils import IntegrityError
 from django.contrib.auth import get_user_model
 from django.template.defaultfilters import slugify
-try:
-    import unittest.mock as mock
-except ImportError:
-    import mock
+from django.contrib.staticfiles.testing import StaticLiveServerTestCase
+
 from owslib.map.wms111 import ContentMetadata
 
-from geonode.services.utils import test_resource_table_status
+from geonode.layers.models import Dataset
 from geonode.tests.base import GeoNodeBaseTestSupport
+from geonode.resource.manager import resource_manager
+from geonode.base import enumerations as base_enumerations
+from geonode.harvesting.harvesters.wms import WebMapService
+from geonode.services.utils import test_resource_table_status
+
 from . import enumerations, forms
 from .models import Service
-from .serviceprocessors import (base,
-                                handler,
-                                wms,
-                                arcgis)
+from .serviceprocessors import (
+    base,
+    handler,
+    wms,
+    arcgis)
 from .serviceprocessors.arcgis import MapLayer
-from .serviceprocessors.wms import WebMapService
 
-from arcrest import MapService as ArcMapService
-from owslib.wms import WebMapService as OwsWebMapService
-from collections import namedtuple
+logger = logging.getLogger(__name__)
 
 
 class ModuleFunctionsTestCase(StandardTestCase):
@@ -96,7 +104,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
         cat.get_workspace.assert_called_with(mock_settings.CASCADE_WORKSPACE)
         cat.create_workspace.assert_called_with(
             mock_settings.CASCADE_WORKSPACE,
-            "http://www.geonode.org/{}".format(mock_settings.CASCADE_WORKSPACE)
+            f"http://www.geonode.org/{mock_settings.CASCADE_WORKSPACE}"
         )
 
     @mock.patch("geonode.services.serviceprocessors.handler.WmsServiceHandler",
@@ -104,7 +112,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
     def test_get_service_handler_wms(self, mock_wms_handler):
         phony_url = "http://fake"
         handler.get_service_handler(phony_url, service_type=enumerations.WMS)
-        mock_wms_handler.assert_called_with(phony_url)
+        mock_wms_handler.assert_called_with(phony_url, None)
 
     @mock.patch("arcrest.MapService",
                 autospec=True)
@@ -262,11 +270,11 @@ class ModuleFunctionsTestCase(StandardTestCase):
         LayerESRIExtent = namedtuple('LayerESRIExtent', 'spatialReference xmin ymin ymax xmax')
         LayerESRIExtentSpatialReference = namedtuple('LayerESRIExtentSpatialReference', 'wkid latestWkid')
 
-        layer_meta = MapLayer(
+        dataset_meta = MapLayer(
             id=0,
             title='Droits pétroliers et gaziers / Oil and Gas Rights',
             abstract='Droits pétroliers et gaziers / Oil and Gas Rights',
-            type='Feature Layer',
+            type='Feature Dataset',
             geometryType='esriGeometryPolygon',
             copyrightText='',
             extent=LayerESRIExtent(
@@ -368,35 +376,184 @@ class ModuleFunctionsTestCase(StandardTestCase):
             minScale=0,
             maxScale=0
         )
-        resource_fields = handler._get_indexed_layer_fields(layer_meta)
-        self.assertEqual(resource_fields['alternate'], '0-droits-ptroliers-et-gaziers-oil-and-gas-rights')
+        resource_fields = handler._get_indexed_dataset_fields(dataset_meta)
+        self.assertEqual(resource_fields['alternate'], f'{slugify(phony_url)}:{dataset_meta.id}')
+
+    @mock.patch("arcrest.MapService",
+                autospec=True)
+    def test_get_arcgis_alternative_structure(self, mock_map_service):
+
+        LayerESRIExtent = namedtuple('LayerESRIExtent', 'spatialReference xmin ymin ymax xmax')
+        LayerESRIExtentSpatialReference = namedtuple('LayerESRIExtentSpatialReference', 'wkid latestWkid')
+
+        mock_arcgis_service_contents = {
+            'copyrightText': '',
+            'description': '',
+            'documentInfo': {
+                'Author': 'Administrator',
+                'Category': '',
+                'Comments': '',
+                'Keywords': '',
+                'Subject': '',
+                'Title': 'basemap_ortofoto_AGEA2011'
+            },
+            'fullExtent': {
+                'xmax': 579764.2319999984,
+                'xmin': 386130.6820000001,
+                'ymax': 4608909.064,
+                'ymin': 4418016.7140000025
+            },
+            'initialExtent': {
+                'xmax': 605420.5635976626,
+                'xmin': 349091.7176066373,
+                'ymax': 4608197.140968505,
+                'ymin': 4418728.637031497
+            },
+            'layers': [
+                {
+                    'copyrightText': '',
+                    'definitionExpression': '',
+                    'description': '',
+                    'displayField': '',
+                    'extent': LayerESRIExtent(
+                        LayerESRIExtentSpatialReference(None, None),
+                        570962.7069999985,
+                        4600232.139,
+                        394932.207,
+                        4426693.639000002),
+                    'fields': [],
+                    'geometryType': '',
+                    'id': 1,
+                    'maxScale': 0.0,
+                    'minScale': 0.0,
+                    'name': 'Regione_Campania.ecw',
+                    'title': 'Regione_Campania.ecw',
+                    'parentLayer': {
+                        'id': -1,
+                        'name': '-1'
+                    },
+                    'subLayers': [],
+                    'type': 'Raster Dataset'
+                }
+            ],
+            'mapName': 'Layers',
+            'serviceDescription': '',
+            'singleFusedMapCache': True,
+            'spatialReference': None,
+            'tileInfo': {
+                'cols': 512,
+                'compressionQuality': 0,
+                'dpi': 96,
+                'format': 'PNG8',
+                'lods': [
+                    {'level': 0, 'resolution': 185.20870375074085, 'scale': 700000.0},
+                    {'level': 1, 'resolution': 66.1459656252646, 'scale': 250000.0},
+                    {'level': 2, 'resolution': 26.458386250105836, 'scale': 100000.0},
+                    {'level': 3, 'resolution': 19.843789687579378, 'scale': 75000.0},
+                    {'level': 4, 'resolution': 13.229193125052918, 'scale': 50000.0},
+                    {'level': 5, 'resolution': 6.614596562526459, 'scale': 25000.0},
+                    {'level': 6, 'resolution': 2.6458386250105836, 'scale': 10000.0},
+                    {'level': 7, 'resolution': 1.3229193125052918, 'scale': 5000.0},
+                    {'level': 8, 'resolution': 0.5291677250021167, 'scale': 2000.0}
+                ],
+                'origin': {
+                    'x': 289313.907000001,
+                    'y': 4704355.239
+                },
+                'rows': 512,
+                'spatialReference': None
+            },
+            'units': 'esriMeters'
+        }
+
+        phony_url = "http://sit.cittametropolitana.na.it/arcgis/rest/services/basemap_ortofoto_AGEA2011/MapServer"
+        mock_parsed_arcgis = mock.MagicMock(ArcMapService).return_value
+        (url, mock_parsed_arcgis) = mock.MagicMock(ArcMapService,
+                                                   return_value=(phony_url,
+                                                                 mock_parsed_arcgis)).return_value
+        mock_parsed_arcgis.url = phony_url
+        mock_parsed_arcgis.layers = mock_arcgis_service_contents['layers']
+        mock_parsed_arcgis._contents = mock_arcgis_service_contents
+        mock_parsed_arcgis._json_struct = mock_arcgis_service_contents
+
+        mock_map_service.return_value = (phony_url, mock_parsed_arcgis)
+
+        handler = arcgis.ArcImageServiceHandler(phony_url)
+        self.assertEqual(handler.url, phony_url)
+
+        dataset_meta = handler._dataset_meta(mock_parsed_arcgis.layers[0])
+        self.assertIsNotNone(dataset_meta)
+        self.assertEqual(dataset_meta.id, 1)
+        resource_fields = handler._get_indexed_dataset_fields(dataset_meta)
+        self.assertEqual(resource_fields['alternate'], f'{slugify(phony_url)}:{dataset_meta.id}')
+
+        test_user, created = get_user_model().objects.get_or_create(username="serviceowner")
+        if created:
+            test_user.set_password("somepassword")
+            test_user.save()
+        try:
+            result = handler.create_geonode_service(test_user)
+            geonode_service, created = Service.objects.get_or_create(
+                base_url=result.base_url,
+                owner=test_user)
+            for _d in Dataset.objects.filter(remote_service=geonode_service):
+                resource_manager.delete(_d.uuid, instance=_d)
+
+            handler._harvest_resource(dataset_meta, geonode_service)
+            geonode_dataset = Dataset.objects.filter(remote_service=geonode_service).get()
+            self.assertIsNotNone(geonode_dataset)
+            self.assertNotEqual(geonode_dataset.srid, "EPSG:4326")
+            self.assertEqual(geonode_dataset.sourcetype, base_enumerations.SOURCE_TYPE_REMOTE)
+            self.client.login(username='admin', password='admin')
+            response = self.client.get(reverse('dataset_detail', args=(geonode_dataset.name,)))
+            self.assertEqual(response.status_code, 200)
+            for _d in Dataset.objects.filter(remote_service=geonode_service):
+                resource_manager.delete(_d.uuid, instance=_d)
+        except (Service.DoesNotExist, HTTPError) as e:
+            # In the case the Service URL becomes inaccessible for some reason
+            logger.error(e)
 
 
 class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(WmsServiceHandlerTestCase, self).setUp()
+        super().setUp()
 
         self.phony_url = ("http://a-really-long-and-fake-name-here-so-that-"
                           "we-use-it-in-tests")
         self.phony_title = "a generic title"
-        self.phony_version = "some.version"
-        self.phony_layer_name = "phony_name"
+        self.phony_version = "s.version"
+        self.phony_dataset_name = "phony_name"
         self.phony_keywords = ["first", "second"]
         mock_parsed_wms = mock.MagicMock(OwsWebMapService).return_value
         (url, mock_parsed_wms) = mock.MagicMock(WebMapService,
                                                 return_value=(self.phony_url,
                                                               mock_parsed_wms)).return_value
-        mock_parsed_wms.url = self.phony_url
+        mock_parsed_wms.provider.url = self.phony_url
+        mock_parsed_wms.identification.abstract = None
         mock_parsed_wms.identification.title = self.phony_title
         mock_parsed_wms.identification.version = self.phony_version
         mock_parsed_wms.identification.keywords = self.phony_keywords
-        mock_layer_meta = mock.MagicMock(ContentMetadata)
-        mock_layer_meta.name = self.phony_layer_name
-        mock_layer_meta.children = []
-        mock_layer_meta.crsOptions = ["EPSG:3857"]
+        mock_parsed_wms_getcapa_operation = {
+            'name': 'GetCapabilities',
+            'methods': [
+                {
+                    'type': 'Get',
+                    'url': self.phony_url
+                }
+            ]
+        }
+        mock_parsed_wms.operations = [mock_parsed_wms_getcapa_operation, ]
+        mock_dataset_meta = mock.MagicMock(ContentMetadata)
+        mock_dataset_meta.name = self.phony_dataset_name
+        mock_dataset_meta.title = self.phony_dataset_name
+        mock_dataset_meta.abstract = ""
+        mock_dataset_meta.keywords = []
+        mock_dataset_meta.children = []
+        mock_dataset_meta.crsOptions = ["EPSG:3857"]
+        mock_dataset_meta.boundingBox = [-5000, -5000, 5000, 5000, "EPSG:3857"]
         mock_parsed_wms.contents = {
-            mock_layer_meta.name: mock_layer_meta,
+            mock_dataset_meta.name: mock_dataset_meta,
         }
         self.parsed_wms = mock_parsed_wms
 
@@ -410,68 +567,84 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
             self.local_user.set_password("somepassword")
             self.local_user.save()
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_has_correct_url(self, mock_wms):
+    def test_has_correct_url(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         self.assertEqual(handler.url, self.phony_url)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_has_valid_name_when_no_title_exists(self, mock_wms):
+    def test_has_valid_name_when_no_title_exists(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
         mock_wms.return_value[1].identification.title = ""
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         self.assertEqual(
             handler.name, slugify(self.phony_url)[:255])
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_has_valid_name_when_title_exists(self, mock_wms):
+    def test_has_valid_name_when_title_exists(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         self.assertNotEqual(handler.name, slugify(self.phony_title))
         self.assertEqual("a-generic-title", slugify(self.phony_title))
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_has_correct_service_type(self, mock_wms):
+    def test_has_correct_service_type(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         self.assertEqual(handler.service_type, enumerations.WMS)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
     @mock.patch("geonode.services.serviceprocessors.wms.settings",
                 autospec=True)
-    def test_detects_indexed_service(self, mock_settings, mock_wms):
+    def test_detects_indexed_service(self, mock_settings, mock_wms_parsed_service, mock_wms):
         mock_settings.DEFAULT_MAP_CRS = "EPSG:3857"
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         self.assertEqual(handler.indexing_method, enumerations.INDEXED)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
     @mock.patch("geonode.services.serviceprocessors.wms.settings",
                 autospec=True)
-    def test_detects_cascaded_service(self, mock_settings, mock_wms):
+    def test_detects_cascaded_service(self, mock_settings, mock_wms_parsed_service, mock_wms):
         mock_settings.DEFAULT_MAP_CRS = "EPSG:3857"
-        mock_layer_meta = mock.MagicMock(ContentMetadata)
-        mock_layer_meta.name = "phony_name"
-        mock_layer_meta.children = []
-        mock_layer_meta.crsOptions = ["epsg:4326"]
+        mock_dataset_meta = mock.MagicMock(ContentMetadata)
+        mock_dataset_meta.name = "phony_name"
+        mock_dataset_meta.children = []
+        mock_dataset_meta.crsOptions = ["EPSG:4326"]
         self.parsed_wms.contents = {
-            mock_layer_meta.name: mock_layer_meta,
+            mock_dataset_meta.name: mock_dataset_meta,
         }
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
-        self.assertEqual(handler.indexing_method, enumerations.CASCADED)
+        self.assertEqual(handler.indexing_method, enumerations.INDEXED)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
-                autospec=True)
-    def test_create_geonode_service(self, mock_wms):
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch.object(wms.WmsServiceHandler, "parsed_service")
+    def test_create_geonode_service(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
+        mock_wms_parsed_service.provider.url = self.phony_url
+        mock_wms_parsed_service.identification.title = self.phony_title
+        mock_wms_parsed_service.identification.version = self.phony_version
         handler = wms.WmsServiceHandler(self.phony_url)
         result = handler.create_geonode_service(self.test_user)
         self.assertEqual(result.base_url, self.phony_url)
@@ -481,64 +654,144 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
         self.assertEqual(result.version, self.phony_version)
         self.assertEqual(result.name, handler.name)
         self.assertEqual(result.title, self.phony_title)
+        # mata_data_only is set to Try
+        self.assertTrue(result.metadata_only)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_get_keywords(self, mock_wms):
+    def test_geonode_service_uses_given_getmap_params(self, mock_wms_parsed_service, mock_wms):
+        phony_url = ('https://www.geoportal.hessen.de/mapbender/php/wms.php?'
+                     'layer_id=36995&PHPSESSID=27jb139lqk29rmul77beuji261&'
+                     'withChilds=1&'
+                     'version=1.1.1&'
+                     'REQUEST=GetCapabilities&'
+                     'SERVICE=WMS')
+        mock_wms.return_value = (phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
+        mock_wms_parsed_service.provider.url = self.phony_url
+        mock_wms_parsed_service.identification.title = self.phony_title
+        mock_wms_parsed_service.identification.version = self.phony_version
+        handler = wms.WmsServiceHandler(phony_url)
+        result = handler.create_geonode_service(self.test_user)
+        self.assertEqual(result.base_url, 'https://www.geoportal.hessen.de/mapbender/php/wms.php')
+        self.assertEqual(
+            result.extra_queryparams,
+            'layer_id=36995&PHPSESSID=27jb139lqk29rmul77beuji261&withChilds=1&REQUEST=GetCapabilities&SERVICE=WMS')
+        self.assertEqual(result.service_url, f"{result.base_url}?{result.extra_queryparams}")
+        self.assertEqual(result.type, handler.service_type)
+        self.assertEqual(result.method, handler.indexing_method)
+        self.assertEqual(result.owner, self.test_user)
+        self.assertEqual(result.version, self.phony_version)
+        self.assertEqual(result.name, handler.name)
+        self.assertEqual(result.title, self.phony_title)
+        # mata_data_only is set to Try
+        self.assertTrue(result.metadata_only)
+        self.assertDictEqual(result.operations, {'GetCapabilities': {'name': 'GetCapabilities', 'methods': [
+                             {'type': 'Get', 'url': 'http://a-really-long-and-fake-name-here-so-that-we-use-it-in-tests'}], 'formatOptions': []}})
+
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch.object(wms.WmsServiceHandler, "parsed_service")
+    def test_get_keywords(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
+        mock_wms_parsed_service.identification.keywords = self.phony_keywords
+        mock_wms_parsed_service.identification.title = self.phony_title
+        mock_wms_parsed_service.identification.version = self.phony_version
         handler = wms.WmsServiceHandler(self.phony_url)
         result = handler.get_keywords()
         self.assertEqual(result, self.phony_keywords)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_get_resource(self, mock_wms):
+    def test_get_resource(self, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
-        result = handler.get_resource(self.phony_layer_name)
-        self.assertEqual(result.name, self.phony_layer_name)
+        result = handler.get_resource(self.phony_dataset_name)
+        self.assertIsNone(result)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
-    def test_get_resources(self, mock_wms):
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.get_resources",
+                autospec=True)
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.get_resource",
+                autospec=True)
+    def test_get_resources(self, mock_wms_get_resource, mock_wms_get_resources, mock_wms_parsed_service, mock_wms):
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
+        mock_wms_parsed_service.provider.url = self.phony_url
+        mock_wms_parsed_service.identification.title = self.phony_title
+        mock_wms_parsed_service.identification.version = self.phony_version
+        mock_wms_get_resource.return_value = list(self.parsed_wms.contents.values())[0]
+        mock_wms_get_resources.return_value = self.parsed_wms.contents.values()
         handler = wms.WmsServiceHandler(self.phony_url)
         result = list(handler.get_resources())
-        self.assertEqual(result[0].name, self.phony_layer_name)
+        self.assertEqual(len(result), 1)
+        test_user, created = get_user_model().objects.get_or_create(username="serviceowner")
+        if created:
+            test_user.set_password("somepassword")
+            test_user.save()
+        result = handler.create_geonode_service(test_user)
+        try:
+            geonode_service, created = Service.objects.get_or_create(
+                base_url=result.base_url,
+                owner=test_user)
+            for _d in Dataset.objects.filter(remote_service=geonode_service):
+                resource_manager.delete(_d.uuid, instance=_d)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+            result = list(handler.get_resources())
+            dataset_meta = handler.get_resource(result[0].name)
+            resource_fields = handler._get_indexed_dataset_fields(dataset_meta)
+            keywords = resource_fields.pop("keywords")
+            resource_fields["keywords"] = keywords
+            resource_fields["is_approved"] = True
+            resource_fields["is_published"] = True
+        except Service.DoesNotExist as e:
+            # In the case the Service URL becomes inaccessible for some reason
+            logger.error(e)
+
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
     @mock.patch("geonode.services.serviceprocessors.wms.settings",
                 autospec=True)
-    def test_offers_geonode_projection(self, mock_settings, mock_wms):
+    def test_offers_geonode_projection(self, mock_settings, mock_wms_parsed_service, mock_wms):
         mock_settings.DEFAULT_MAP_CRS = "EPSG:3857"
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         result = handler._offers_geonode_projection()
         self.assertTrue(result)
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
     @mock.patch("geonode.services.serviceprocessors.wms.settings",
                 autospec=True)
-    def test_does_not_offer_geonode_projection(self, mock_settings, mock_wms):
+    def test_does_not_offer_geonode_projection(self, mock_settings, mock_wms_parsed_service, mock_wms):
         mock_settings.DEFAULT_MAP_CRS = "EPSG:3857"
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
-        self.parsed_wms.contents[self.phony_layer_name].crsOptions = [
+        mock_wms_parsed_service.return_value = self.parsed_wms
+        self.parsed_wms.contents[self.phony_dataset_name].crsOptions = [
             "EPSG:4326"]
         handler = wms.WmsServiceHandler(self.phony_url)
         result = handler._offers_geonode_projection()
-        self.assertFalse(result)
+        self.assertEqual(result, 'EPSG:3857')
 
-    @mock.patch("geonode.services.serviceprocessors.wms.WebMapService",
+    @mock.patch("geonode.harvesting.harvesters.wms.WebMapService")
+    @mock.patch("geonode.services.serviceprocessors.wms.WmsServiceHandler.parsed_service",
                 autospec=True)
     @mock.patch("geonode.services.serviceprocessors.base.get_geoserver_"
                 "cascading_workspace", autospec=True)
-    def test_get_store(self, mock_get_gs_cascading_store, mock_wms):
+    def test_get_store(self, mock_get_gs_cascading_store, mock_wms_parsed_service, mock_wms):
         mock_workspace = mock_get_gs_cascading_store.return_value
         mock_catalog = mock_workspace.catalog
         mock_catalog.get_store.return_value = None
         mock_wms.return_value = (self.phony_url, self.parsed_wms)
+        mock_wms_parsed_service.return_value = self.parsed_wms
         handler = wms.WmsServiceHandler(self.phony_url)
         handler._get_store(create=True)
         mock_catalog.create_wmsstore.assert_called_with(
@@ -548,11 +801,12 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
             password=mock_catalog.password
         )
 
+    @flaky(max_runs=3)
     def test_local_user_cant_delete_service(self):
         self.client.logout()
         response = self.client.get(reverse('register_service'))
         self.assertEqual(response.status_code, 302)
-        url = 'https://master.demo.geonode.org/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities'
+        url = 'https://demo.geo-solutions.it/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities'
         # url = "http://fake"
         service_type = enumerations.WMS
         form_data = {
@@ -595,15 +849,23 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
         response = self.client.post(reverse('remove_service', args=(s.id,)))
         self.assertEqual(len(Service.objects.all()), 0)
 
+    @flaky(max_runs=3)
     def test_add_duplicate_remote_service_url(self):
         form_data = {
-            'url': 'https://master.demo.geonode.org/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities',
+            'url': 'https://demo.geo-solutions.it/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities',
             'type': enumerations.WMS
         }
 
         self.client.login(username='serviceowner', password='somepassword')
 
         # Add the first resource
+        url = 'https://demo.geo-solutions.it/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities'
+        # url = "http://fake"
+        service_type = enumerations.WMS
+        form_data = {
+            'url': url,
+            'type': service_type
+        }
         form = forms.CreateServiceForm(form_data)
         self.assertTrue(form.is_valid())
         self.assertEqual(Service.objects.count(), 0)
@@ -612,9 +874,9 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
 
         # Try adding the same URL again
         form = forms.CreateServiceForm(form_data)
-        self.assertFalse(form.is_valid())
         self.assertEqual(Service.objects.count(), 1)
-        self.client.post(reverse('register_service'), data=form_data)
+        with self.assertRaises(IntegrityError):
+            self.client.post(reverse('register_service'), data=form_data)
         self.assertEqual(Service.objects.count(), 1)
 
 
@@ -623,7 +885,7 @@ class WmsServiceHarvestingTestCase(StaticLiveServerTestCase):
 
     @classmethod
     def setUpClass(cls):
-        super(WmsServiceHarvestingTestCase, cls).setUpClass()
+        super().setUpClass()
 
         try:
             cls.client = Client()
@@ -636,13 +898,13 @@ class WmsServiceHarvestingTestCase(StaticLiveServerTestCase):
             cls.cookie = cls.client.cookies['sessionid']
             cls.selenium = webdriver.Firefox()
             cls.selenium.implicitly_wait(10)
-            cls.selenium.get(cls.live_server_url + '/')
+            cls.selenium.get(f"{cls.live_server_url}/")
             cls.selenium.add_cookie({'name': 'sessionid', 'value': cls.cookie.value, 'secure': False, 'path': '/'})
             cls.selenium.refresh()
             reg_url = reverse('register_service')
             cls.client.get(reg_url)
 
-            url = 'https://master.demo.geonode.org/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities'
+            url = 'https://demo.geo-solutions.it/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities'
             service_type = enumerations.WMS
             form_data = {
                 'url': url,
@@ -661,7 +923,7 @@ class WmsServiceHarvestingTestCase(StaticLiveServerTestCase):
     def tearDownClass(cls):
         if cls.selenium:
             cls.selenium.quit()
-            super(WmsServiceHarvestingTestCase, cls).tearDownClass()
+            super().tearDownClass()
 
     def test_harvest_resources(self):
         if self.selenium:

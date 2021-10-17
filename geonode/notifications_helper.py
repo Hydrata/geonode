@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,15 +16,17 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 import logging
 from importlib import import_module
 
 from django.apps import AppConfig
 from django.conf import settings
 from django.db.models import signals, Q
+from django.contrib.auth import get_user_model
 
 from geonode.tasks.tasks import send_queued_notifications
+
+logger = logging.getLogger(__name__)
 
 E = getattr(settings, 'NOTIFICATION_ENABLED', False)
 M = getattr(settings, 'NOTIFICATIONS_MODULE', None)
@@ -66,7 +67,7 @@ def call_celery(func):
     def wrap(*args, **kwargs):
         ret = func(*args, **kwargs)
         if settings.PINAX_NOTIFICATIONS_QUEUE_ALL:
-            send_queued_notifications.delay()
+            send_queued_notifications.apply_async()
         return ret
 
     return wrap
@@ -93,8 +94,9 @@ def send_notification(*args, **kwargs):
             return queue_notification(*args, **kwargs)
         try:
             return notifications.models.send(*args, **kwargs)
-        except Exception:
-            logging.exception("Could not send notifications.")
+        except Exception as e:
+            logger.exception(e)
+            logger.error(f"Could not send notifications: {args}")
             return False
 
 
@@ -103,7 +105,7 @@ def queue_notification(*args, **kwargs):
         return notifications.models.queue(*args, **kwargs)
 
 
-def get_notification_recipients(notice_type_label, exclude_user=None):
+def get_notification_recipients(notice_type_label, exclude_user=None, resource=None):
     """ Get notification recipients
     """
     if not has_notifications:
@@ -111,15 +113,28 @@ def get_notification_recipients(notice_type_label, exclude_user=None):
     recipients_ids = notifications.models.NoticeSetting.objects \
         .filter(notice_type__label=notice_type_label) \
         .values('user')
-    from django.contrib.auth import get_user_model
+
     profiles = get_user_model().objects.filter(id__in=recipients_ids)
+    exclude_users_ids = []
     if exclude_user:
-        profiles.exclude(username=exclude_user.username)
+        exclude_users_ids.append(exclude_user.id)
+    if resource and resource.title:
+        for user in profiles:
+            try:
+                if not user.is_superuser and \
+                        not user.has_perm('view_resourcebase', resource.get_self_resource()):
+                    exclude_users_ids.append(user.id)
+                if user.pk == resource.owner.pk and \
+                        not notice_type_label.split("_")[-1] in ("updated", "rated", "comment", "approved", "published"):
+                    exclude_users_ids.append(user.id)
+            except Exception as e:
+                # fallback which wont send mails
+                logger.exception(f"Could not send notifications: {e}")
+                return []
+    return profiles.exclude(id__in=exclude_users_ids)
 
-    return profiles
 
-
-def get_comment_notification_recipients(notice_type_label, instance_owner, exclude_user=None):
-    profiles = get_notification_recipients(notice_type_label, exclude_user)
-    profiles = profiles.filter(Q(pk=instance_owner.pk) | Q(is_superuser=True))
+def get_comment_notification_recipients(notice_type_label, instance_owner, exclude_user=None, resource=None):
+    profiles = get_notification_recipients(notice_type_label, exclude_user, resource=resource)
+    profiles = profiles.filter(Q(pk=resource.owner.pk) | Q(is_superuser=True))
     return profiles

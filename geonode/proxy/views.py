@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -17,20 +16,16 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 import io
 import os
 import re
-import six
 import gzip
-import json
 import shutil
 import logging
 import tempfile
 import traceback
 
 from hyperlink import URL
-from slugify import slugify
 from urllib.parse import urlparse, urlsplit, urljoin
 
 from django.conf import settings
@@ -39,13 +34,13 @@ from django.http import HttpResponse
 from django.views.generic import View
 from distutils.version import StrictVersion
 from django.http.request import validate_host
-from django.forms.models import model_to_dict
 from django.utils.translation import ugettext as _
-from django.core.files.storage import FileSystemStorage
 from django.views.decorators.csrf import requires_csrf_token
 
-from geonode.base.models import Link
-from geonode.layers.models import Layer, LayerFile
+from geonode.layers.models import Dataset
+from geonode.upload.models import Upload
+from geonode.base.models import ResourceBase
+from geonode.storage.manager import storage_manager
 from geonode.utils import (
     resolve_object,
     check_ogc_backend,
@@ -53,20 +48,18 @@ from geonode.utils import (
     zip_dir,
     get_headers,
     http_client,
-    json_response,
-    json_serializer_producer)
+    json_response)
 from geonode.base.enumerations import LINK_TYPES as _LT
 
-from geonode import geoserver, qgis_server  # noqa
-from geonode.monitoring import register_event
+from geonode import geoserver  # noqa
+from geonode.base import register_event
 
-TIMEOUT = 300
+TIMEOUT = 30
 
 LINK_TYPES = [L for L in _LT if L.startswith("OGC:")]
 
 logger = logging.getLogger(__name__)
 
-storage = FileSystemStorage()
 
 ows_regexp = re.compile(
     r"^(?i)(version)=(\d\.\d\.\d)(?i)&(?i)request=(?i)(GetCapabilities)&(?i)service=(?i)(\w\w\w)$")
@@ -98,9 +91,9 @@ def proxy(request, url=None, response_callback=None,
     scheme = str(url.scheme)
     locator = str(url.path)
     if url.query != "":
-        locator += '?' + url.query
+        locator += f"?{url.query}"
     if url.fragment != "":
-        locator += '#' + url.fragment
+        locator += f"#{url.fragment}"
 
     # White-Black Listing Hosts
     site_url = urlsplit(settings.SITEURL)
@@ -168,8 +161,7 @@ def proxy(request, url=None, response_callback=None,
 
     if request.method == "GET" and access_token and 'access_token' not in _url:
         query_separator = '&' if '?' in _url else '?'
-        _url = ('%s%saccess_token=%s' %
-                (_url, query_separator, access_token))
+        _url = f'{_url}{query_separator}access_token={access_token}'
 
     _data = request.body.decode('utf-8')
 
@@ -177,28 +169,42 @@ def proxy(request, url=None, response_callback=None,
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         from geonode.geoserver.helpers import ogc_server_settings
         _url = _url.replace(
-            '%s%s' % (settings.SITEURL, 'geoserver'),
+            f'{settings.SITEURL}geoserver',
             ogc_server_settings.LOCATION.rstrip('/'))
         _data = _data.replace(
-            '%s%s' % (settings.SITEURL, 'geoserver'),
+            f'{settings.SITEURL}geoserver',
             ogc_server_settings.LOCATION.rstrip('/'))
 
-    response, content = http_client.request(_url,
-                                            method=request.method,
-                                            data=_data,
-                                            headers=headers,
-                                            timeout=timeout,
-                                            user=request.user)
+    response, content = http_client.request(
+        _url,
+        method=request.method,
+        data=_data.encode('utf-8'),
+        headers=headers,
+        timeout=timeout,
+        user=request.user)
+    if response is None:
+        return HttpResponse(
+            content=content,
+            reason=content,
+            status=500)
     content = response.content or response.reason
     status = response.status_code
     content_type = response.headers.get('Content-Type')
+
+    if status >= 400:
+        return HttpResponse(
+            content=content,
+            reason=content,
+            status=status,
+            content_type=content_type)
 
     # decompress GZipped responses if not enabled
     # if content and response and response.getheader('Content-Encoding') == 'gzip':
     if content and content_type and content_type == 'gzip':
         buf = io.BytesIO(content)
-        f = gzip.GzipFile(fileobj=buf)
-        content = f.read()
+        with gzip.GzipFile(fileobj=buf) as f:
+            content = f.read()
+        buf.close()
 
     PLAIN_CONTENT_TYPES = [
         'text',
@@ -209,7 +215,7 @@ def proxy(request, url=None, response_callback=None,
         'gml'
     ]
     for _ct in PLAIN_CONTENT_TYPES:
-        if content_type and _ct in content_type and not isinstance(content, six.string_types):
+        if content_type and _ct in content_type and not isinstance(content, str):
             try:
                 content = content.decode()
                 break
@@ -228,8 +234,8 @@ def proxy(request, url=None, response_callback=None,
     else:
         # If we get a redirect, let's add a useful message.
         if status and status in (301, 302, 303, 307):
-            _response = HttpResponse(('This proxy does not support redirects. The server in "%s" '
-                                      'asked for a redirect to "%s"' % (url, response.getheader('Location'))),
+            _response = HttpResponse((f"This proxy does not support redirects. The server in '{url}' "
+                                      f"asked for a redirect to '{response.getheader('Location')}'"),
                                      status=status,
                                      content_type=content_type
                                      )
@@ -253,7 +259,7 @@ def proxy(request, url=None, response_callback=None,
                 content_type=content_type)
 
 
-def download(request, resourceid, sender=Layer):
+def download(request, resourceid, sender=Dataset):
 
     _not_authorized = _("You are not authorized to download this resource.")
     _not_permitted = _("You are not permitted to save or edit this resource.")
@@ -265,39 +271,36 @@ def download(request, resourceid, sender=Layer):
                               permission='base.download_resourcebase',
                               permission_msg=_not_permitted)
 
-    if isinstance(instance, Layer):
+    if isinstance(instance, ResourceBase):
         # Create Target Folder
-        dirpath = tempfile.mkdtemp()
+        dirpath = tempfile.mkdtemp(dir=settings.STATIC_ROOT)
         dir_time_suffix = get_dir_time_suffix()
         target_folder = os.path.join(dirpath, dir_time_suffix)
         if not os.path.exists(target_folder):
             os.makedirs(target_folder)
 
-        layer_files = []
+        dataset_files = []
         try:
-            upload_session = instance.get_upload_session()
-            if upload_session:
-                layer_files = [
-                    item for idx, item in enumerate(LayerFile.objects.filter(upload_session=upload_session))]
-                if layer_files:
-                    # Copy all Layer related files into a temporary folder
-                    for lyr in layer_files:
-                        if storage.exists(str(lyr.file)):
-                            geonode_layer_path = storage.path(str(lyr.file))
-                            base_filename, original_ext = os.path.splitext(geonode_layer_path)
-                            shutil.copy2(geonode_layer_path, target_folder)
-                        else:
-                            return HttpResponse(
-                                loader.render_to_string(
-                                    '401.html',
-                                    context={
-                                        'error_title': _("No files found."),
-                                        'error_message': _no_files_found
-                                    },
-                                    request=request), status=404)
+            files = instance.resourcebase_ptr.files
+            # Copy all Dataset related files into a temporary folder
+            for file_path in files:
+                if storage_manager.exists(file_path):
+                    dataset_files.append(file_path)
+                    filename = os.path.basename(file_path)
+                    with open(f"{target_folder}/{filename}", 'wb+') as f:
+                        f.write(storage_manager.open(file_path).read())
+                else:
+                    return HttpResponse(
+                        loader.render_to_string(
+                            '401.html',
+                            context={
+                                'error_title': _("No files found."),
+                                'error_message': _no_files_found
+                            },
+                            request=request), status=404)
 
             # Check we can access the original files
-            if not layer_files:
+            if not dataset_files:
                 return HttpResponse(
                     loader.render_to_string(
                         '401.html',
@@ -306,88 +309,6 @@ def download(request, resourceid, sender=Layer):
                             'error_message': _no_files_found
                         },
                         request=request), status=404)
-
-            # Let's check for associated SLD files (if any)
-            try:
-                for s in instance.styles.all():
-                    sld_file_path = os.path.join(target_folder, "".join([s.name, ".sld"]))
-                    sld_file = open(sld_file_path, "w")
-                    sld_file.write(s.sld_body.strip())
-                    sld_file.close()
-
-                    try:
-                        sld_file = open(sld_file_path, "r")
-
-                        # Collecting headers and cookies
-                        headers, access_token = get_headers(request, urlsplit(s.sld_url), s.sld_url)
-
-                        response, content = http_client.get(
-                            s.sld_url,
-                            headers=headers,
-                            timeout=TIMEOUT,
-                            user=request.user)
-                        sld_remote_content = response.text
-                        sld_file_path = os.path.join(target_folder, "".join([s.name, "_remote.sld"]))
-                        sld_file = open(sld_file_path, "w")
-                        sld_file.write(sld_remote_content.strip())
-                        sld_file.close()
-                    except Exception:
-                        traceback.print_exc()
-                        tb = traceback.format_exc()
-                        logger.debug(tb)
-            except Exception:
-                traceback.print_exc()
-                tb = traceback.format_exc()
-                logger.debug(tb)
-
-            # Let's dump metadata
-            target_md_folder = os.path.join(target_folder, ".metadata")
-            if not os.path.exists(target_md_folder):
-                os.makedirs(target_md_folder)
-
-            try:
-                dump_file = os.path.join(target_md_folder, "".join([instance.name, ".dump"]))
-                with open(dump_file, 'w') as outfile:
-                    serialized_obj = json_serializer_producer(model_to_dict(instance))
-                    json.dump(serialized_obj, outfile)
-
-                links = Link.objects.filter(resource=instance.resourcebase_ptr)
-                for link in links:
-                    link_name = slugify(link.name)
-                    link_file = os.path.join(target_md_folder, "".join([link_name, ".%s" % link.extension]))
-                    if link.link_type in ('data'):
-                        # Skipping 'data' download links
-                        continue
-                    elif link.link_type in ('metadata', 'image'):
-                        # Dumping metadata files and images
-                        link_file = open(link_file, "wb")
-                        try:
-                            # Collecting headers and cookies
-                            headers, access_token = get_headers(request, urlsplit(link.url), link.url)
-
-                            response, raw = http_client.get(
-                                link.url,
-                                stream=True,
-                                headers=headers,
-                                timeout=TIMEOUT,
-                                user=request.user)
-                            raw.decode_content = True
-                            shutil.copyfileobj(raw, link_file)
-                        except Exception:
-                            traceback.print_exc()
-                            tb = traceback.format_exc()
-                            logger.debug(tb)
-                        finally:
-                            link_file.close()
-                    elif link.link_type.startswith('OGC'):
-                        # Dumping OGC/OWS links
-                        link_file = open(link_file, "w")
-                        link_file.write(link.url.strip())
-                        link_file.close()
-            except Exception:
-                traceback.print_exc()
-                tb = traceback.format_exc()
-                logger.debug(tb)
 
             # ZIP everything and return
             target_file_name = "".join([instance.name, ".zip"])
@@ -398,9 +319,9 @@ def download(request, resourceid, sender=Layer):
                 content=open(target_file, mode='rb'),
                 status=200,
                 content_type="application/zip")
-            response['Content-Disposition'] = 'attachment; filename="%s"' % target_file_name
+            response['Content-Disposition'] = f'attachment; filename="{target_file_name}"'
             return response
-        except NotImplementedError:
+        except (NotImplementedError, Upload.DoesNotExist):
             traceback.print_exc()
             tb = traceback.format_exc()
             logger.debug(tb)
@@ -412,6 +333,9 @@ def download(request, resourceid, sender=Layer):
                         'error_message': _no_files_found
                     },
                     request=request), status=404)
+        finally:
+            if target_folder is not None:
+                shutil.rmtree(target_folder, ignore_errors=True)
     return HttpResponse(
         loader.render_to_string(
             '401.html',
@@ -435,7 +359,7 @@ class OWSListView(View):
         headers, access_token = get_headers(request, _url, _raw_url)
         if access_token:
             _j = '&' if _url.query else '?'
-            _raw_url = _j.join([_raw_url, 'access_token={}'.format(access_token)])
+            _raw_url = _j.join([_raw_url, f'access_token={access_token}'])
         data.append({'url': _raw_url, 'type': 'OGC:WMS'})
 
         # WCS
@@ -444,7 +368,7 @@ class OWSListView(View):
         headers, access_token = get_headers(request, _url, _raw_url)
         if access_token:
             _j = '&' if _url.query else '?'
-            _raw_url = _j.join([_raw_url, 'access_token={}'.format(access_token)])
+            _raw_url = _j.join([_raw_url, f'access_token={access_token}'])
         data.append({'url': _raw_url, 'type': 'OGC:WCS'})
 
         # WFS
@@ -453,7 +377,7 @@ class OWSListView(View):
         headers, access_token = get_headers(request, _url, _raw_url)
         if access_token:
             _j = '&' if _url.query else '?'
-            _raw_url = _j.join([_raw_url, 'access_token={}'.format(access_token)])
+            _raw_url = _j.join([_raw_url, f'access_token={access_token}'])
         data.append({'url': _raw_url, 'type': 'OGC:WFS'})
 
         # catalogue from configuration
@@ -464,7 +388,7 @@ class OWSListView(View):
             headers, access_token = get_headers(request, _url, _raw_url)
             if access_token:
                 _j = '&' if _url.query else '?'
-                _raw_url = _j.join([_raw_url, 'access_token={}'.format(access_token)])
+                _raw_url = _j.join([_raw_url, f'access_token={access_token}'])
             data.append({'url': _raw_url, 'type': 'OGC:CSW'})
 
         # main site url

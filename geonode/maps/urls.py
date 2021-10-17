@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,12 +17,9 @@
 #
 #########################################################################
 
-from django.conf.urls import url
+from django.conf.urls import url, include
 from django.views.generic import TemplateView
-
-from geonode import geoserver, qgis_server
-from geonode.utils import check_ogc_backend
-from geonode.monitoring import register_url_event
+from geonode.base import register_url_event
 
 from . import views
 
@@ -33,29 +29,9 @@ js_info_dict = {
 
 new_map_view = views.new_map
 existing_map_view = views.map_view
-
-if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-    new_map_view = views.new_map
-    existing_map_view = views.map_view
-    map_embed = views.map_embed
-    map_edit = views.map_edit
-    map_json = views.map_json
-    map_thumbnail = views.map_thumbnail
-
-elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-    from geonode.maps.qgis_server_views import MapCreateView, \
-        MapDetailView, MapEmbedView, MapEditView, MapUpdateView
-
-    new_map_view = MapCreateView.as_view()
-    existing_map_view = MapDetailView.as_view()
-    map_embed = MapEmbedView.as_view()
-
-    from geonode.maps.qgis_server_views import map_download_qlr, \
-        map_download_leaflet, set_thumbnail_map
-
-    map_edit = MapEditView.as_view()
-    map_json = MapUpdateView.as_view()
-    map_thumbnail = set_thumbnail_map
+map_embed = views.map_embed
+map_edit = views.map_edit
+map_json = views.map_json
 
 maps_list = register_url_event()(TemplateView.as_view(template_name='maps/map_list.html'))
 
@@ -66,10 +42,9 @@ urlpatterns = [
         {'facet_type': 'maps'},
         name='maps_browse'),
     url(r'^new$', new_map_view, name="new_map"),
-    url(r'^add_layer$', views.add_layer, name='add_layer'),
+    url(r'^add_dataset$', views.add_dataset, name='add_dataset'),
     url(r'^new/data$', views.new_map_json, name='new_map_json'),
     url(r'^checkurl/?$', views.ajax_url_lookup),
-    url(r'^snapshot/create/?$', views.snapshot_create),
     url(r'^(?P<mapid>[^/]+)$', views.map_detail, name='map_detail'),
     url(r'^(?P<mapid>[^/]+)/view$', existing_map_view, name='map_view'),
     url(r'^(?P<mapid>[^/]+)/edit$', map_edit, name='map_edit'),
@@ -79,39 +54,15 @@ urlpatterns = [
     url(r'^(?P<mapid>[^/]+)/metadata$', views.map_metadata, name='map_metadata'),
     url(r'^(?P<mapid>[^/]+)/metadata_advanced$', views.map_metadata_advanced, name='map_metadata_advanced'),
     url(r'^(?P<mapid>[^/]+)/embed$', map_embed, name='map_embed'),
-    url(r'^(?P<mapid>[^/]+)/embed_widget$', views.map_embed_widget, name='map_embed_widget'),
-    url(r'^(?P<mapid>[^/]+)/history$', views.ajax_snapshot_history),
-    url(r'^(?P<mapid>\d+)/thumbnail$', map_thumbnail, name='map_thumbnail'),
-    url(r'^(?P<mapid>[^/]+)/(?P<snapshot>[A-Za-z0-9_\-]+)/view$', views.map_view),
-    url(r'^(?P<mapid>[^/]+)/(?P<snapshot>[A-Za-z0-9_\-]+)/info$',
-        views.map_detail),
-    url(r'^(?P<mapid>[^/]+)/(?P<snapshot>[A-Za-z0-9_\-]+)/embed/?$',
-        views.map_embed),
-    url(r'^(?P<mapid>[^/]+)/(?P<snapshot>[A-Za-z0-9_\-]+)/data$',
-        map_json,
-        name='map_json'),
     url(r'^embed/$', views.map_embed, name='map_embed'),
-    url(r'^metadata/batch/(?P<ids>[^/]*)/$', views.map_batch_metadata, name='map_batch_metadata'),
+    url(r'^metadata/batch/$', views.map_batch_metadata, name='map_batch_metadata'),
     url(r'^(?P<mapid>[^/]*)/metadata_detail$',
         views.map_metadata_detail,
         name='map_metadata_detail'),
     url(r'^(?P<layername>[^/]*)/attributes',
-        views.maplayer_attributes,
-        name='maplayer_attributes'),
+        views.mapdataset_attributes,
+        name='mapdataset_attributes'),
     url(r'^autocomplete/$',
         views.MapAutocomplete.as_view(), name='autocomplete_map'),
+    url(r'^', include('geonode.maps.api.urls')),
 ]
-
-if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-    # Add QLR url specific for QGIS Server
-    urlpatterns += [
-        url(r'^(?P<mapid>[^/]+)/download$',
-            views.map_download,
-            name='map_download'),
-        url(r'^(?P<mapid>[^/]+)/qlr$',
-            map_download_qlr,
-            name='map_download_qlr'),
-        url(r'^(?P<mapid>[^/]+)/download_leaflet',
-            map_download_leaflet,
-            name='map_download_leaflet'),
-    ]

@@ -1,17 +1,17 @@
 {% extends "geonode_base.html" %}
 {% load i18n %}
-{% load staticfiles %}
+{% load static %}
 {% load bootstrap_tags %}
 
 {% block title %} {% trans "Batch Edit" %} - {{ block.super }} {% endblock %}
 
-{% block body_class %}{% trans "batch edit" %}{% endblock %}
+{% block body_class %}batch edit{% endblock %}
 
 {% block body %}
 <div class="page-header">
   <h2 class="page-title">{% trans "Batch Edit" %}</h2>
 </div>
-<form action="/{{ model|lower }}s/metadata/batch/{{ ids }}/" method="post">
+<form action={% url name_space %} method="post">
   {% csrf_token %}
   {{ form|as_bootstrap }}
   <div>

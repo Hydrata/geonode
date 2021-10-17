@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,13 +17,13 @@
 #
 #########################################################################
 
-from geonode.upload.models import Upload, UploadFile
+from geonode.upload.models import Upload
 
 from django.contrib import admin
 
 
 def import_link(obj):
-    return "<a href='%s'>Geoserver Importer Link</a>" % obj.get_import_url()
+    return f"<a href='{obj.get_import_url()}'>Geoserver Importer Link</a>"
 
 
 import_link.short_description = 'Link'
@@ -32,10 +31,19 @@ import_link.allow_tags = True
 
 
 class UploadAdmin(admin.ModelAdmin):
-    list_display = ('user', 'date', 'state', import_link)
+    list_display = ('id', 'import_id', 'name', 'resource', 'user', 'date', 'state', import_link)
+    list_display_links = ('id',)
     date_hierarchy = 'date'
-    list_filter = ('user', 'state')
+    list_filter = ('name', 'resource', 'user', 'date', 'state')
+    search_fields = ('name', 'resource', 'user', 'date', 'state')
+
+    def delete_queryset(self, request, queryset):
+        """
+        We need to invoke the 'Upload.delete' method even when deleting
+        through the admin batch action
+        """
+        for obj in queryset:
+            obj.delete()
 
 
 admin.site.register(Upload, UploadAdmin)
-admin.site.register(UploadFile)

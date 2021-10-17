@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -22,7 +21,7 @@ import json
 import jenkins
 import sys
 from optparse import OptionParser
-from six.moves.urllib.request import Request
+from urllib.request import Request
 
 
 JENKINS_IP = 'http://52.7.139.177/'
@@ -35,7 +34,7 @@ GEONODE_DEMO_JOB = 'geonode-aws'  # jenkins job name for demo site
 # task can be either "redeploy-demo-site", "build-demo-job"
 
 
-class DemoGeonode(object):
+class DemoGeonode:
     """
     This class allows interaction with the Jenkins APIs to do several tasks,
     for a more detailed guide on how to use self.j see
@@ -73,7 +72,7 @@ class DemoGeonode(object):
 
     def buildJob(self, job):
         """Trigger a job build"""
-        print('Building %s job' % job)
+        print(f'Building {job} job')
         self.j.build_job(job)
         print('Build requested')
 

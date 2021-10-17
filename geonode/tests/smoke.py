@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -41,9 +40,9 @@ class GeoNodeSmokeTests(GeoNodeBaseTestSupport):
     GEOSERVER = False
 
     def setUp(self):
-        super(GeoNodeSmokeTests, self).setUp()
+        super().setUp()
 
-        # If Geoserver and GeoNetwork are not running
+        # If Geoserver is not running
         # avoid running tests that call those views.
         if "GEOSERVER" in os.environ.keys():
             self.GEOSERVER = True
@@ -70,17 +69,17 @@ class GeoNodeSmokeTests(GeoNodeBaseTestSupport):
         response = self.client.get(reverse('help'))
         self.assertEqual(response.status_code, 200)
 
-    # Layer Pages #
+    # Dataset Pages #
 
-    def test_layer_page(self):
+    def test_dataset_page(self):
         'Test if the data home page renders.'
-        response = self.client.get(reverse('layer_browse'))
+        response = self.client.get(reverse('dataset_browse'))
         self.assertEqual(response.status_code, 200)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_layer_acls(self):
+    def test_dataset_acls(self):
         'Test if the data/acls endpoint renders.'
-        response = self.client.get(reverse('layer_acls'))
+        response = self.client.get(reverse('dataset_acls'))
         self.assertEqual(response.status_code, 401)
 
     # Maps Pages #
@@ -128,6 +127,12 @@ class GeoNodeSmokeTests(GeoNodeBaseTestSupport):
         response = self.client.get(reverse('opensearch_dispatch'))
         self.assertEqual(response.status_code, 200)
 
+    # Settings Tests #
+
+    def test_settings_geoserver_location(self):
+        '''Ensure GEOSERVER_LOCATION variable ends with /'''
+        self.assertTrue(settings.GEOSERVER_LOCATION.endswith('/'))
+
 
 class GeoNodeUtilsTests(GeoNodeBaseTestSupport):
 
@@ -138,35 +143,6 @@ class GeoNodeUtilsTests(GeoNodeBaseTestSupport):
         pass
 
     # Some other Stuff
-
-    """
-    def test_check_geonode_is_up(self):
-        from contextlib import nested
-        from geonode.utils import check_geonode_is_up
-
-        def blowup():
-            raise Exception("BOOM")
-
-        with patch('geonode.maps.models.gs_catalog') as mock_gs:
-            mock_gs.get_workspaces.side_effect = blowup
-
-            self.assertRaises(GeoNodeException, check_geonode_is_up)
-
-        with nested(
-            patch('geonode.maps.models.gs_catalog'),
-            patch('geonode.maps.models.Layer.objects.geonetwork')
-        ) as (mock_gs, mock_gn):
-            mock_gn.login.side_effect = blowup
-            self.assertRaises(GeoNodeException, check_geonode_is_up)
-            self.assertTrue(mock_gs.get_workspaces.called)
-
-        with nested(
-            patch('geonode.maps.models.gs_catalog'),
-            patch('geonode.maps.models.Layer.objects.geonetwork')
-        ) as (mock_gs, mock_gn):
-            # no assertion, this should just run without error
-            check_geonode_is_up()
-    """
 
     def test_forward_mercator(self):
         arctic = forward_mercator((0, 85))
@@ -236,37 +212,42 @@ class GeoNodeUtilsTests(GeoNodeBaseTestSupport):
         self.assertAlmostEqual(
             arctic[0],
             0.0,
+            places=3,
             msg="Arctic longitude is correct")
         self.assertAlmostEqual(
             arctic[1],
             85.0,
+            places=3,
             msg="Arctic latitude is correct")
 
         self.assertAlmostEqual(
             antarctic[0],
             0.0,
+            places=3,
             msg="Antarctic longitude is correct")
         self.assertAlmostEqual(
-            antarctic[1], -85.0, msg="Antarctic latitude is correct")
+            antarctic[1], -85.0, places=3, msg="Antarctic latitude is correct")
 
         self.assertAlmostEqual(
             hawaii[0], -180.0, msg="Hawaiian lon is correct")
-        self.assertAlmostEqual(hawaii[1], 0.0, msg="Hawaiian lat is correct")
+        self.assertAlmostEqual(hawaii[1], 0.0, places=3, msg="Hawaiian lat is correct")
 
         self.assertAlmostEqual(
             phillipines[0],
             180.0,
+            places=3,
             msg="Phillipines lon is correct")
         self.assertAlmostEqual(
             phillipines[1],
             0.0,
+            places=3,
             msg="Phillipines lat is correct")
 
-        self.assertAlmostEqual(ne[0], 180.0, msg="NE lon is correct")
-        self.assertAlmostEqual(ne[1], 90.0, msg="NE lat is correct")
+        self.assertAlmostEqual(ne[0], 180.0, places=3, msg="NE lon is correct")
+        self.assertAlmostEqual(ne[1], 90.0, places=3, msg="NE lat is correct")
 
-        self.assertAlmostEqual(sw[0], -180.0, msg="SW lon is correct")
-        self.assertAlmostEqual(sw[1], -90.0, msg="SW lat is correct")
+        self.assertAlmostEqual(sw[0], -180.0, places=3, msg="SW lon is correct")
+        self.assertAlmostEqual(sw[1], -90.0, places=3, msg="SW lat is correct")
 
     def test_split_query(self):
         query = 'alpha "beta gamma"   delta  '
@@ -289,7 +270,7 @@ class PermissionViewTests(GeoNodeBaseTestSupport):
 class UserMessagesTestCase(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(UserMessagesTestCase, self).setUp()
+        super().setUp()
 
         self.user_password = "somepass"
         self.first_user = get_user_model().objects.create_user(
@@ -325,9 +306,10 @@ class UserMessagesTestCase(GeoNodeBaseTestSupport):
     def test_inbox_redirects_when_not_logged_in(self):
         target_url = reverse("messages_inbox")
         response = self.client.get(target_url)
+        account_login_url = reverse("account_login")
         self.assertRedirects(
             response,
-            "{}{}?next=http%3A//testserver{}".format(settings.SITEURL[:-1], reverse("account_login"), target_url)
+            f"{settings.SITEURL[:-1]}{account_login_url}?next=http%3A//testserver{target_url}"
         )
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
@@ -346,9 +328,10 @@ class UserMessagesTestCase(GeoNodeBaseTestSupport):
     def test_new_message_redirects_when_not_logged_in(self):
         target_url = reverse("message_create", args=(self.first_user.id,))
         response = self.client.get(target_url)
+        account_login_url = reverse("account_login")
         self.assertRedirects(
             response,
-            "{}{}?next=http%3A//testserver{}".format(settings.SITEURL[:-1], reverse("account_login"), target_url)
+            f"{settings.SITEURL[:-1]}{account_login_url}?next=http%3A//testserver{target_url}"
         )
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
@@ -367,7 +350,8 @@ class UserMessagesTestCase(GeoNodeBaseTestSupport):
     def test_thread_detail_redirects_when_not_logged_in(self):
         target_url = reverse("messages_thread_detail", args=(self.thread.id,))
         response = self.client.get(target_url)
+        account_login_url = reverse("account_login")
         self.assertRedirects(
             response,
-            "{}{}?next=http%3A//testserver{}".format(settings.SITEURL[:-1], reverse("account_login"), target_url)
+            f"{settings.SITEURL[:-1]}{account_login_url}?next=http%3A//testserver{target_url}"
         )

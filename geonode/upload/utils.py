@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -28,25 +27,25 @@ import traceback
 from osgeo import ogr
 from lxml import etree
 from itertools import islice
-from defusedxml import lxml as dlxml
-from six import string_types, text_type
+from owslib.etree import etree as dlxml
 
 from django.conf import settings
 from django.urls import reverse
-from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.utils.translation import ugettext as _
+from django.http import HttpResponse, HttpResponseRedirect
 
 from geoserver.catalog import FailedRequestError, ConflictingDataError
 
 from geonode.upload import UploadException
 from geonode.utils import json_response as do_json_response, unzip_file
-from geonode.geoserver.helpers import (gs_catalog,
-                                       gs_uploader,
-                                       ogc_server_settings,
-                                       get_store,
-                                       set_time_dimension,
-                                       create_geoserver_db_featurestore)  # mosaic_delete_first_granule
+from geonode.geoserver.helpers import (
+    gs_catalog,
+    gs_uploader,
+    ogc_server_settings,
+    get_store,
+    set_time_dimension,
+    create_geoserver_db_featurestore)  # mosaic_delete_first_granule
 
 ogr.UseExceptions()
 
@@ -58,7 +57,7 @@ def _log(msg, *args):
 
 
 iso8601 = re.compile(r'^(?P<full>((?P<year>\d{4})([/-]?(?P<mon>(0[1-9])|(1[012]))' +
-                     r'([/-]?(?P<mday>(0[1-9])|([12]\d)|(3[01])))?)?(?:T(?P<hour>([01][0-9])' +
+                     r'([/-]?(?P<mday>(0[1-9])|([12]\d)|(3[01])))?)?(?:[ T]?(?P<hour>([01][0-9])' +
                      r'|(?:2[0123]))(\:?(?P<min>[0-5][0-9])(\:?(?P<sec>[0-5][0-9]([\,\.]\d{1,10})?))?)' +
                      r'?(?:Z|([\-+](?:([01][0-9])|(?:2[0123]))(\:?(?:[0-5][0-9]))?))?)?))$').match
 
@@ -90,7 +89,7 @@ if _ALLOW_MOSAIC_STEP:
         'MOSAIC_ENABLED',
         False)
 
-_ASYNC_UPLOAD = True if ogc_server_settings and ogc_server_settings.DATASTORE else False
+_ASYNC_UPLOAD = (ogc_server_settings and ogc_server_settings.DATASTORE is not None and len(ogc_server_settings.DATASTORE) > 0)
 
 # at the moment, the various time support transformations require the database
 if _ALLOW_TIME_STEP and not _ASYNC_UPLOAD:
@@ -122,7 +121,7 @@ class JSONResponse(HttpResponse):
         if json_opts is None:
             json_opts = {}
         content = json.dumps(obj, **json_opts)
-        super(JSONResponse, self).__init__(
+        super().__init__(
             content, content_type, *args, **kwargs)
 
 
@@ -134,9 +133,9 @@ def json_response(*args, **kw):
 
 def error_response(req, exception=None, errors=None, force_ajax=True):
     if exception:
-        logger.exception('Unexpected error in upload step')
+        logger.exception(f'Unexpected error in upload step: {exception}')
     else:
-        logger.error('upload error: %s', errors)
+        logger.error(f'Upload error response: {errors}')
     if req.is_ajax() or force_ajax:
         content_type = 'text/html' if not req.is_ajax() else None
         return json_response(exception=exception, errors=errors,
@@ -146,8 +145,8 @@ def error_response(req, exception=None, errors=None, force_ajax=True):
         exception = "<br>".join(errors)
     return render(
         req,
-        'upload/layer_upload_error.html',
-        context={'error_msg': 'Unexpected error : %s,' % exception})
+        'upload/dataset_upload_error.html',
+        context={'error_msg': f'Unexpected error : {exception}'})
 
 
 def json_load_byteified(file_handle):
@@ -166,7 +165,7 @@ def json_loads_byteified(json_text, charset):
 
 def _byteify(data, ignore_dicts=False):
     # if this is a unicode string, return its string representation
-    if isinstance(data, text_type):
+    if isinstance(data, str):
         return data
     # if this is a list of values, return list of byteified values
     if isinstance(data, list):
@@ -223,8 +222,8 @@ _pages = {
     'sid': ('run', 'final'),  # MrSID
 }
 
-_latitude_names = set(['latitude', 'lat'])
-_longitude_names = set(['longitude', 'lon', 'lng', 'long'])
+_latitude_names = {'latitude', 'lat'}
+_longitude_names = {'longitude', 'lon', 'lng', 'long'}
 
 
 if not _ALLOW_TIME_STEP:
@@ -258,7 +257,7 @@ def get_next_step(upload_session, offset=1):
     try:
         pages = _pages[upload_session.upload_type]
     except KeyError as e:
-        raise Exception(_('Unsupported file type: %s' % e.message))
+        raise Exception(_(f'Unsupported file type: {e.message}'))
     index = -1
     if upload_session.completed_step and upload_session.completed_step != 'save':
         index = pages.index(upload_session.completed_step)
@@ -266,6 +265,8 @@ def get_next_step(upload_session, offset=1):
 
 
 def get_previous_step(upload_session, post_to):
+    assert upload_session.upload_type is not None
+
     pages = _pages[upload_session.upload_type]
     if post_to == "undefined":
         post_to = "final"
@@ -284,10 +285,10 @@ def _advance_step(req, upload_session):
 
 
 def next_step_response(req, upload_session, force_ajax=True):
-    _force_ajax = '&force_ajax=true' if force_ajax and 'force_ajax' not in req.GET else ''
+    _force_ajax = '&force_ajax=true' if req and force_ajax and 'force_ajax' not in req.GET else ''
     import_session = upload_session.import_session
     # if the current step is the view POST for this step, advance one
-    if req.method == 'POST':
+    if req and req.method == 'POST':
         if upload_session.completed_step:
             _advance_step(req, upload_session)
         else:
@@ -297,93 +298,104 @@ def next_step_response(req, upload_session, force_ajax=True):
 
     if next == 'error':
         return json_response(
-            {'status': 'error',
-             'success': False,
-             'id': import_session.id,
-             'error_msg': "%s" % upload_session.error_msg,
-             }
+            {
+                'status': 'error',
+                'success': False,
+                'id': import_session.id,
+                'error_msg': str(upload_session.error_msg),
+            }
         )
 
     if next == 'check':
-        # @TODO we skip time steps for coverages currently
         store_type = import_session.tasks[0].target.store_type
         if store_type == 'coverageStore' or _force_ajax:
+            # @TODO we skip time steps for coverages currently
             upload_session.completed_step = 'check'
             return next_step_response(req, upload_session, force_ajax=True)
-    if next == 'check' and force_ajax:
-        url = reverse('data_upload') + "?id=%s" % (import_session.id)
-        return json_response(
-            {'url': url,
-             'status': 'incomplete',
-             'success': True,
-             'id': import_session.id,
-             'redirect_to': settings.SITEURL + 'upload/check' + "?id=%s%s" % (import_session.id, _force_ajax),
-             }
-        )
+        if force_ajax:
+            url = f"{reverse('data_upload')}?id={import_session.id}"
+            return json_response(
+                {
+                    'url': url,
+                    'status': 'incomplete',
+                    'success': True,
+                    'id': import_session.id,
+                    'redirect_to': f"{settings.SITEURL}upload/check?id={import_session.id}{_force_ajax}",
+                }
+            )
 
     if next == 'time':
-        # @TODO we skip time steps for coverages currently
         store_type = import_session.tasks[0].target.store_type
         layer = import_session.tasks[0].layer
-        (has_time_dim, layer_values) = layer_eligible_for_time_dimension(req,
-                                                                         layer,
-                                                                         upload_session=upload_session)
+        (has_time_dim, dataset_values) = dataset_eligible_for_time_dimension(
+            req,
+            layer,
+            upload_session=upload_session)
         if store_type == 'coverageStore' or not has_time_dim:
+            # @TODO we skip time steps for coverages currently
             upload_session.completed_step = 'time'
             return next_step_response(req, upload_session, False)
-    if next == 'time' and (
-            upload_session.time is None or not upload_session.time):
-        upload_session.completed_step = 'time'
-        return next_step_response(req, upload_session, force_ajax)
-    if next == 'time' and force_ajax:
-        url = reverse('data_upload') + "?id=%s" % (import_session.id)
-        return json_response(
-            {'url': url,
-             'status': 'incomplete',
-             'success': True,
-             'id': import_session.id,
-             'redirect_to': settings.SITEURL + 'upload/time' + "?id=%s%s" % (import_session.id, _force_ajax),
-             }
-        )
+        if upload_session.time is None or not upload_session.time:
+            upload_session.completed_step = 'time'
+        if force_ajax:
+            url = f"{reverse('data_upload')}?id={import_session.id}"
+            return json_response(
+                {
+                    'url': url,
+                    'status': 'incomplete',
+                    'required_input': has_time_dim,
+                    'success': True,
+                    'id': import_session.id,
+                    'redirect_to': f"{settings.SITEURL}upload/time?id={import_session.id}{_force_ajax}",
+                }
+            )
+        else:
+            return next_step_response(req, upload_session, force_ajax)
 
     if next == 'mosaic' and force_ajax:
-        url = reverse('data_upload') + "?id=%s" % (import_session.id)
+        url = f"{reverse('data_upload')}?id={import_session.id}"
         return json_response(
-            {'url': url,
-             'status': 'incomplete',
-             'success': True,
-             'id': import_session.id,
-             'redirect_to': settings.SITEURL + 'upload/mosaic' + "?id=%s%s" % (import_session.id, _force_ajax),
-             }
+            {
+                'url': url,
+                'status': 'incomplete',
+                'required_input': len(_force_ajax) == 0,
+                'success': True,
+                'id': import_session.id,
+                'redirect_to': f"{settings.SITEURL}upload/mosaic?id={import_session.id}{_force_ajax}",
+            }
         )
 
     if next == 'srs' and force_ajax:
-        url = reverse('data_upload') + "?id=%s" % (import_session.id)
+        url = f"{reverse('data_upload')}?id={import_session.id}"
         return json_response(
-            {'url': url,
-             'status': 'incomplete',
-             'success': True,
-             'id': import_session.id,
-             'redirect_to': settings.SITEURL + 'upload/srs' + "?id=%s%s" % (import_session.id, _force_ajax),
-             }
+            {
+                'url': url,
+                'status': 'incomplete',
+                'required_input': len(_force_ajax) == 0,
+                'success': True,
+                'id': import_session.id,
+                'redirect_to': f"{settings.SITEURL}upload/srs?id={import_session.id}{_force_ajax}",
+            }
         )
 
     if next == 'csv' and force_ajax:
-        url = reverse('data_upload') + "?id=%s" % (import_session.id)
+        url = f"{reverse('data_upload')}?id={import_session.id}"
         return json_response(
-            {'url': url,
-             'status': 'incomplete',
-             'success': True,
-             'id': import_session.id,
-             'redirect_to': settings.SITEURL + 'upload/csv' + "?id=%s%s" % (import_session.id, _force_ajax),
-             }
+            {
+                'url': url,
+                'status': 'incomplete',
+                'required_input': len(_force_ajax) == 0,
+                'success': True,
+                'id': import_session.id,
+                'redirect_to': f"{settings.SITEURL}upload/csv?id={import_session.id}{_force_ajax}",
+            }
         )
 
     # @todo this is not handled cleanly - run is not a real step in that it
     # has no corresponding view served by the 'view' function.
     if next == 'run':
         upload_session.completed_step = next
-        if _ASYNC_UPLOAD and req.is_ajax():
+        if (_ASYNC_UPLOAD and not req) or (req and req.is_ajax()):
             return run_response(req, upload_session)
         else:
             # on sync we want to run the import and advance to the next step
@@ -391,13 +403,13 @@ def next_step_response(req, upload_session, force_ajax=True):
             return next_step_response(req, upload_session,
                                       force_ajax=force_ajax)
     session_id = None
-    if 'id' in req.GET:
-        session_id = "?id=%s" % (req.GET['id'])
+    if req and 'id' in req.GET:
+        session_id = f"?id={req.GET['id']}"
     elif import_session and import_session.id:
-        session_id = "?id=%s" % (import_session.id)
+        session_id = f"?id={import_session.id}"
 
-    if req.is_ajax() or force_ajax:
-        content_type = 'text/html' if not req.is_ajax() else None
+    if req and req.is_ajax() or force_ajax:
+        content_type = 'text/html' if req and not req.is_ajax() else None
         if session_id:
             return json_response(
                 redirect_to=reverse(
@@ -445,20 +457,19 @@ def check_import_session_is_valid(request, upload_session, import_session):
             layer = import_session.tasks[0].layer
             invalid = [a for a in layer.attributes if str(a.name).find(' ') >= 0]
             if invalid:
-                att_list = "<pre>%s</pre>" % '. '.join(
-                    [a.name for a in invalid])
-                msg = "Attributes with spaces are not supported : %s" % att_list
+                att_list = f"<pre>{'. '.join([a.name for a in invalid])}</pre>"
+                msg = f"Attributes with spaces are not supported : {att_list}"
                 upload_session.completed_step = 'error'
                 upload_session.error_msg = msg
             return layer
         except Exception as e:
             return render(request,
-                          'upload/layer_upload_error.html', context={'error_msg': str(e)})
+                          'upload/dataset_upload_error.html', context={'error_msg': str(e)})
     elif store_type == 'coverageStore':
         return True
 
 
-def _get_time_dimensions(layer, upload_session):
+def _get_time_dimensions(layer, upload_session, values=None):
     date_time_keywords = [
         'date',
         'time',
@@ -471,19 +482,19 @@ def _get_time_dimensions(layer, upload_session):
         'enddate']
 
     def filter_name(b):
-        return any([_kw in b for _kw in date_time_keywords])
+        return any([_kw in b.lower() for _kw in date_time_keywords])
 
     att_list = []
     try:
-        layer_values = _get_layer_values(layer, upload_session, expand=1)
-        if layer and layer_values:
-            ft = layer_values[0]
+        dataset_values = values or _get_dataset_values(layer, upload_session, expand=1)
+        if layer and dataset_values:
+            ft = dataset_values[0]
             attributes = [{'name': k, 'binding': ft[k]['binding'] or 0} for k in ft.keys()]
             for a in attributes:
-                if ((('Integer' in a['binding'] or 'Long' in a['binding']) and 'id' != a['name'].lower())) \
+                if (('Integer' in a['binding'] or 'Long' in a['binding']) and 'id' != a['name'].lower()) \
                         and filter_name(a['name'].lower()):
-                    if layer_values:
-                        for feat in layer_values:
+                    if dataset_values:
+                        for feat in dataset_values:
                             if iso8601(str(feat.get(a['name'])['value'])):
                                 if a not in att_list:
                                     att_list.append(a)
@@ -491,8 +502,8 @@ def _get_time_dimensions(layer, upload_session):
                     att_list.append(a)
                 elif 'String' in a['binding'] \
                         and filter_name(a['name'].lower()):
-                    if layer_values:
-                        for feat in layer_values:
+                    if dataset_values:
+                        for feat in dataset_values:
                             if feat.get(a['name'])['value'] and \
                                     iso8601(str(feat.get(a['name'])['value'])):
                                 if a not in att_list:
@@ -507,7 +518,7 @@ def _get_time_dimensions(layer, upload_session):
 
 def _fixup_base_file(absolute_base_file, tempdir=None):
     if not tempdir:
-        tempdir = tempfile.mkdtemp()
+        tempdir = tempfile.mkdtemp(dir=settings.STATIC_ROOT)
     if not os.path.isfile(absolute_base_file):
         tmp_files = [f for f in os.listdir(tempdir) if os.path.isfile(os.path.join(tempdir, f))]
         for f in tmp_files:
@@ -523,11 +534,11 @@ def _fixup_base_file(absolute_base_file, tempdir=None):
     if os.path.exists(absolute_base_file):
         return absolute_base_file
     else:
-        raise Exception(_('File does not exist: %s' % absolute_base_file))
+        raise Exception(_(f'File does not exist: {absolute_base_file}'))
 
 
-def _get_layer_values(layer, upload_session, expand=0):
-    layer_values = []
+def _get_dataset_values(layer, upload_session, expand=0):
+    dataset_values = []
     if upload_session:
         absolute_base_file = _fixup_base_file(
             upload_session.base_file[0].base_file,
@@ -535,9 +546,9 @@ def _get_layer_values(layer, upload_session, expand=0):
 
         inDataSource = ogr.Open(absolute_base_file)
         lyr = inDataSource.GetLayer(str(layer.name))
-        limit = 100
-        for feat in islice(lyr, 0, limit):
-            try:
+        limit = 10
+        try:
+            for feat in islice(lyr, 0, limit):
                 feat_values = json_loads_byteified(
                     feat.ExportToJson(),
                     upload_session.charset).get('properties')
@@ -551,21 +562,21 @@ def _get_layer_values(layer, upload_session, expand=0):
                             feat_values[k] = ff
                         else:
                             feat_values[k] = feat_value
-                    layer_values.append(feat_values)
-            except Exception as e:
-                logger.exception(e)
-    return layer_values
+                    dataset_values.append(feat_values)
+        except Exception as e:
+            logger.exception(e)
+    return dataset_values
 
 
-def layer_eligible_for_time_dimension(
+def dataset_eligible_for_time_dimension(
         request, layer, values=None, upload_session=None):
     _is_eligible = False
-    layer_values = values or _get_layer_values(layer, upload_session, expand=0)
+    dataset_values = values or _get_dataset_values(layer, upload_session, expand=0)
     att_list = _get_time_dimensions(layer, upload_session)
     _is_eligible = att_list or False
     if upload_session and _is_eligible:
         upload_session.time = True
-    return (_is_eligible, layer_values)
+    return (_is_eligible, dataset_values)
 
 
 def run_import(upload_session, async_upload=_ASYNC_UPLOAD):
@@ -580,16 +591,14 @@ def run_import(upload_session, async_upload=_ASYNC_UPLOAD):
     import_execution_requested = False
     if import_session.state == 'INCOMPLETE':
         if task.state != 'ERROR':
-            raise Exception(_('unknown item state: %s' % task.state))
+            raise Exception(_(f'unknown item state: {task.state}'))
     elif import_session.state == 'PENDING' and task.target.store_type == 'coverageStore':
         if task.state == 'READY':
             import_session.commit(async_upload)
             import_execution_requested = True
         if task.state == 'ERROR':
             progress = task.get_progress()
-            raise Exception(_(
-                'error during import: %s' %
-                progress.get('message')))
+            raise Exception(_(f"error during import: {progress.get('message')}"))
 
     # if a target datastore is configured, ensure the datastore exists
     # in geoserver and set the uploader target appropriately
@@ -600,15 +609,13 @@ def run_import(upload_session, async_upload=_ASYNC_UPLOAD):
             workspace=settings.DEFAULT_WORKSPACE
         )
         _log(
-            'setting target datastore %s %s',
-            target.name,
-            target.workspace.name)
+            f'setting target datastore {target.name} {target.workspace.name}')
         task.set_target(target.name, target.workspace.name)
     else:
         target = task.target
 
     if upload_session.update_mode:
-        _log('setting updateMode to %s', upload_session.update_mode)
+        _log(f'setting updateMode to {upload_session.update_mode}')
         task.set_update_mode(upload_session.update_mode)
 
     _log('running import session')
@@ -625,8 +632,8 @@ def progress_redirect(step, upload_id):
     return json_response(dict(
         success=True,
         id=upload_id,
-        redirect_to=reverse('data_upload', args=[step]) + "?id=%s" % upload_id,
-        progress=reverse('data_upload_progress') + "?id=%s" % upload_id
+        redirect_to=f"{reverse('data_upload', args=[step])}?id={upload_id}",
+        progress=f"{reverse('data_upload_progress')}?id={upload_id}"
     ))
 
 
@@ -655,7 +662,7 @@ def _get_time_regex(spatial_files, base_file_name):
         basename = os.path.basename(aux)
         aux_head, aux_tail = os.path.splitext(basename)
         if 'timeregex' == aux_head and '.properties' == aux_tail:
-            with open(aux, 'r') as timeregex_prop_file:
+            with open(aux) as timeregex_prop_file:
                 rr = timeregex_prop_file.read()
                 if rr and rr.split(","):
                     rrff = rr.split(",")
@@ -718,7 +725,7 @@ def import_imagemosaic_granules(
     # We use the GeoServer REST APIs in order to create the ImageMosaic
     #  and later add the granule through the GeoServer Importer.
     head = head.replace('{mosaic_time_value}', '')
-    head = re.sub('^[^a-zA-z]*|[^a-zA-Z]*$', '', head)
+    head = re.sub('^[^a-zA-Z]*|[^a-zA-Z]*$', '', head)
 
     # 1. Create a zip file containing the ImageMosaic .properties files
     # 1a. Let's check and prepare the DB based DataStore
@@ -750,7 +757,7 @@ def import_imagemosaic_granules(
              'fetch size': '1000',
              'host': db['HOST'],
              'port': db['PORT'] if isinstance(
-                 db['PORT'], string_types) else str(db['PORT']) or '5432',
+                 db['PORT'], str) else str(db['PORT']) or '5432',
              'database': db['NAME'],
              'user': db['USER'],
              'passwd': db['PASSWORD'],
@@ -779,6 +786,10 @@ def import_imagemosaic_granules(
         "db_conn_validate": db['CONN_VALIDATE'] if 'CONN_VALIDATE' in db else "true",
     }
 
+    indexer_template = """AbsolutePath={abs_path_flag}
+Schema= the_geom:Polygon,location:String,{time_attr}
+CheckAuxiliaryMetadata={aux_metadata_flag}
+SuggestedSPI=it.geosolutions.imageioimpl.plugins.tiff.TIFFImageReaderSpi"""
     if mosaic_time_regex:
         indexer_template = """AbsolutePath={abs_path_flag}
 TimeAttribute={time_attr}
@@ -789,14 +800,9 @@ SuggestedSPI=it.geosolutions.imageioimpl.plugins.tiff.TIFFImageReaderSpi"""
 
         timeregex_template = """regex=(?<=_)({mosaic_time_regex})"""
 
-        if not os.path.exists(dirname + '/timeregex.properties'):
-            with open(dirname + '/timeregex.properties', 'w') as timeregex_prop_file:
+        if not os.path.exists(f"{dirname}/timeregex.properties"):
+            with open(f"{dirname}/timeregex.properties", 'w') as timeregex_prop_file:
                 timeregex_prop_file.write(timeregex_template.format(**context))
-    else:
-        indexer_template = """AbsolutePath={abs_path_flag}
-Schema= the_geom:Polygon,location:String,{time_attr}
-CheckAuxiliaryMetadata={aux_metadata_flag}
-SuggestedSPI=it.geosolutions.imageioimpl.plugins.tiff.TIFFImageReaderSpi"""
 
     datastore_template = r"""SPI=org.geotools.data.postgis.PostgisNGDataStoreFactory
 host={db_host}
@@ -811,17 +817,17 @@ Connection\ timeout={db_conn_timeout}
 min\ connections={db_conn_min}
 max\ connections={db_conn_max}"""
 
-    if not os.path.exists(dirname + '/indexer.properties'):
-        with open(dirname + '/indexer.properties', 'w') as indexer_prop_file:
+    if not os.path.exists(f"{dirname}/indexer.properties"):
+        with open(f"{dirname}/indexer.properties", 'w') as indexer_prop_file:
             indexer_prop_file.write(indexer_template.format(**context))
 
-    if not os.path.exists(dirname + '/datastore.properties'):
-        with open(dirname + '/datastore.properties', 'w') as datastore_prop_file:
+    if not os.path.exists(f"{dirname}/datastore.properties"):
+        with open(f"{dirname}/datastore.properties", 'w') as datastore_prop_file:
             datastore_prop_file.write(datastore_template.format(**context))
 
     files_to_upload = []
     if not append_to_mosaic_opts and spatial_files:
-        z = zipfile.ZipFile(dirname + '/' + head + '.zip', "w", allowZip64=True)
+        z = zipfile.ZipFile(f"{dirname}/{head}.zip", "w", allowZip64=True)
         for spatial_file in spatial_files:
             f = spatial_file.base_file
             dst_basename = os.path.basename(f)
@@ -830,31 +836,30 @@ max\ connections={db_conn_max}"""
                 # Let's import only the first granule
                 z.write(spatial_file.base_file, arcname=dst_head + dst_tail)
             files_to_upload.append(spatial_file.base_file)
-        if os.path.exists(dirname + '/indexer.properties'):
-            z.write(dirname + '/indexer.properties', arcname='indexer.properties')
-        if os.path.exists(dirname + '/datastore.properties'):
+        if os.path.exists(f"{dirname}/indexer.properties"):
+            z.write(f"{dirname}/indexer.properties", arcname='indexer.properties')
+        if os.path.exists(f"{dirname}/datastore.properties"):
             z.write(
-                dirname +
-                '/datastore.properties',
+                f"{dirname}/datastore.properties",
                 arcname='datastore.properties')
         if mosaic_time_regex:
             z.write(
-                dirname + '/timeregex.properties',
+                f"{dirname}/timeregex.properties",
                 arcname='timeregex.properties')
         z.close()
 
         # 2. Send a "create ImageMosaic" request to GeoServer through gs_config
-        cat._cache.clear()
         # - name = name of the ImageMosaic (equal to the base_name)
         # - data = abs path to the zip file
         # - configure = parameter allows for future configuration after harvesting
         name = head
-        data = open(dirname + '/' + head + '.zip', 'rb')
-        try:
-            cat.create_imagemosaic(name, data)
-        except ConflictingDataError:
-            # Trying to append granules to an existing mosaic
-            pass
+
+        with open(f"{dirname}/{head}.zip", 'rb') as data:
+            try:
+                cat.create_imagemosaic(name, data)
+            except ConflictingDataError:
+                # Trying to append granules to an existing mosaic
+                pass
 
         # configure time as LIST
         if mosaic_time_regex:

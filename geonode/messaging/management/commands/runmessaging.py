@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -19,10 +18,8 @@
 #########################################################################
 
 import logging
-import sys
 
 from django.core.management.base import BaseCommand
-from django.conf import settings
 
 from geonode.messaging import connection
 from geonode.messaging.consumer import Consumer

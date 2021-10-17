@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -28,11 +27,11 @@ from django.urls import reverse
 
 from geonode import geoserver
 from geonode import GeoNodeException
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.decorators import on_ogc_backend
 from geonode.geoserver.signals import gs_catalog
 
-from .utils import create_layer
+from .utils import create_dataset
 
 
 r"""
@@ -65,11 +64,11 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
     fixtures = ['initial_data.json', 'bobby']
 
     def setUp(self):
-        super(CreateLayerCoreTest, self).setUp()
+        super().setUp()
         # createlayer must use postgis as a datastore
         # set temporary settings to use a postgis datastore
         DATASTORE_URL = 'postgis://geonode:geonode@localhost:5432/datastore'
-        postgis_db = dj_database_url.parse(DATASTORE_URL, conn_max_age=600)
+        postgis_db = dj_database_url.parse(DATASTORE_URL, conn_max_age=0)
         settings.DATABASES['datastore'] = postgis_db
         settings.OGC_SERVER['default']['DATASTORE'] = 'datastore'
 
@@ -80,26 +79,25 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
         del settings.DATABASES['datastore']
         # TODO remove stuff from django and geoserver catalog
 
-    def test_layer_creation_without_postgis(self):
+    def test_dataset_creation_without_postgis(self):
         # TODO implement this: must raise an error message
         pass
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_layer_creation(self):
+    def test_dataset_creation(self):
         """
         Try creating a layer.
         """
         internal_apps_tests = os.environ.get('TEST_RUN_INTERNAL_APPS', None)
         if not internal_apps_tests:
             internal_apps_tests = settings.internal_apps_tests
+        else:
+            dataset_name = 'point_dataset'
+            dataset_title = 'A layer for points'
 
-        if internal_apps_tests and not internal_apps_tests:
-            layer_name = 'point_layer'
-            layer_title = 'A layer for points'
-
-            create_layer(
-                layer_name,
-                layer_title,
+            create_dataset(
+                dataset_name,
+                dataset_title,
                 'bobby',
                 'Point'
             )
@@ -107,38 +105,38 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
             cat = gs_catalog
 
             # Check the layer is in the Django database
-            layer = Layer.objects.get(name=layer_name)
+            layer = Dataset.objects.get(name=dataset_name)
 
             # check if it is in geoserver
-            gs_layer = cat.get_layer(layer_name)
-            self.assertIsNotNone(gs_layer)
-            self.assertEqual(gs_layer.name, layer_name)
+            gs_dataset = cat.get_layer(dataset_name)
+            self.assertIsNotNone(gs_dataset)
+            self.assertEqual(gs_dataset.name, dataset_name)
 
-            resource = gs_layer.resource
+            resource = gs_dataset.resource
             # we must have only one attibute ('the_geom')
             self.assertEqual(len(resource.attributes), 1)
 
             # check layer corrispondence between django and geoserver
-            self.assertEqual(resource.title, layer_title)
+            self.assertEqual(resource.title, dataset_title)
             self.assertEqual(resource.projection, layer.srid)
 
             # check if layer detail page is accessible with client
-            response = self.client.get(reverse('layer_detail', args=('geonode:%s' % layer_name,)))
+            response = self.client.get(reverse('dataset_detail', args=(f'geonode:{dataset_name}',)))
             self.assertEqual(response.status_code, 200)
 
-    def test_layer_creation_with_wrong_geometry_type(self):
+    def test_dataset_creation_with_wrong_geometry_type(self):
         """
         Try creating a layer with uncorrect geometry type.
         """
         with self.assertRaises(GeoNodeException):
-            create_layer(
-                'wrong_geom_layer',
+            create_dataset(
+                'wrong_geom_dataset',
                 'A layer with wrong geometry',
                 'bobby',
                 'wrong_geometry')
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_layer_creation_with_attributes(self):
+    def test_dataset_creation_with_attributes(self):
         """
         Try creating a layer with attributes.
         """
@@ -146,7 +144,7 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
         if not internal_apps_tests:
             internal_apps_tests = settings.internal_apps_tests
 
-        if internal_apps_tests and not internal_apps_tests:
+        else:
             attributes = """
             {
               "field_str": "string",
@@ -156,25 +154,25 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
             }
             """
 
-            layer_name = 'attributes_layer'
-            layer_title = 'A layer with attributes'
+            dataset_name = 'attributes_dataset'
+            dataset_title = 'A layer with attributes'
 
-            create_layer(
-                layer_name,
-                layer_title,
+            create_dataset(
+                dataset_name,
+                dataset_title,
                 'bobby',
                 'Point',
                 attributes
             )
 
             cat = gs_catalog
-            gs_layer = cat.get_layer(layer_name)
-            resource = gs_layer.resource
+            gs_dataset = cat.get_layer(dataset_name)
+            resource = gs_dataset.resource
 
             # we must have one attibute for the geometry, and 4 other ones
             self.assertEqual(len(resource.attributes), 5)
 
-    def test_layer_creation_with_permissions(self):
+    def test_dataset_creation_with_permissions(self):
         """
         Try creating a layer with permissions.
         """

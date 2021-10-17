@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -18,11 +17,13 @@
 #
 #########################################################################
 
-from defusedxml import lxml as dlxml
+from typing import List
+from owslib.etree import etree as dlxml
+from django.conf import settings
 
 from django.core.management.base import BaseCommand, CommandError
 
-from geonode.base.models import Thesaurus, ThesaurusKeyword, ThesaurusKeywordLabel
+from geonode.base.models import Thesaurus, ThesaurusKeyword, ThesaurusKeywordLabel, ThesaurusLabel
 
 
 class Command(BaseCommand):
@@ -72,8 +73,8 @@ class Command(BaseCommand):
         RDF_URI = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
         XML_URI = 'http://www.w3.org/XML/1998/namespace'
 
-        ABOUT_ATTRIB = '{' + RDF_URI + '}about'
-        LANG_ATTRIB = '{' + XML_URI + '}lang'
+        ABOUT_ATTRIB = f"{{{RDF_URI}}}about"
+        LANG_ATTRIB = f"{{{XML_URI}}}lang"
 
         ns = {
             'rdf': RDF_URI,
@@ -90,27 +91,48 @@ class Command(BaseCommand):
         if not scheme:
             raise CommandError("ConceptScheme not found in file")
 
-        title = scheme.find('dc:title', ns).text
-        descr = scheme.find('dc:description', ns).text if scheme.find('dc:description', ns) else title
-        date_issued = scheme.find('dcterms:issued', ns).text
+        titles = scheme.findall('dc:title', ns)
 
-        print('Thesaurus "{}" issued on {}'.format(title, date_issued))
+        default_lang = getattr(settings, 'THESAURUS_DEFAULT_LANG', None)
+        available_lang = get_all_lang_available_with_title(titles, LANG_ATTRIB)
+        thesaurus_title = determinate_value(available_lang, default_lang)
+
+        descr = scheme.find('dc:description', ns).text if scheme.find('dc:description', ns) else thesaurus_title
+        date_issued = scheme.find('dcterms:issued', ns).text
+        about = scheme.attrib.get(ABOUT_ATTRIB)
+
+        print(f'Thesaurus "{thesaurus_title}" issued at {date_issued}')
 
         thesaurus = Thesaurus()
         thesaurus.identifier = name
 
-        thesaurus.title = title
+        thesaurus.title = thesaurus_title
         thesaurus.description = descr
+        thesaurus.about = about
         thesaurus.date = date_issued
 
         if store:
             thesaurus.save()
 
+        for lang in available_lang:
+            if lang[0] is not None:
+                thesaurus_label = ThesaurusLabel()
+                thesaurus_label.lang = lang[0]
+                thesaurus_label.label = lang[1]
+                thesaurus_label.thesaurus = thesaurus
+                thesaurus_label.save()
+
         for concept in root.findall('skos:Concept', ns):
             about = concept.attrib.get(ABOUT_ATTRIB)
-            alt_label = concept.find('skos:altLabel', ns).text
+            alt_label = concept.find('skos:altLabel', ns)
+            if alt_label is not None:
+                alt_label = alt_label.text
+            else:
+                concepts = concept.findall('skos:prefLabel', ns)
+                available_lang = get_all_lang_available_with_title(concepts, LANG_ATTRIB)
+                alt_label = determinate_value(available_lang, default_lang)
 
-            print('Concept {} ({})'.format(alt_label, about))
+            print(f'Concept {alt_label} ({about})')
 
             tk = ThesaurusKeyword()
             tk.thesaurus = thesaurus
@@ -124,7 +146,7 @@ class Command(BaseCommand):
                 lang = pref_label.attrib.get(LANG_ATTRIB)
                 label = pref_label.text
 
-                print('    Label {}: {}'.format(lang, label))
+                print(f'    Label {lang}: {label}')
 
                 tkl = ThesaurusKeywordLabel()
                 tkl.keyword = tk
@@ -138,7 +160,7 @@ class Command(BaseCommand):
         thesaurus = Thesaurus()
         thesaurus.identifier = name
 
-        thesaurus.title = "Title: " + name
+        thesaurus.title = f"Title: {name}"
         thesaurus.description = "SAMPLE FAKE THESAURUS USED FOR TESTING"
         thesaurus.date = "2016-10-01"
 
@@ -147,13 +169,27 @@ class Command(BaseCommand):
         for keyword in ['aaa', 'bbb', 'ccc']:
             tk = ThesaurusKeyword()
             tk.thesaurus = thesaurus
-            tk.about = keyword + '_about'
-            tk.alt_label = keyword + '_alt'
+            tk.about = f"{keyword}_about"
+            tk.alt_label = f"{keyword}_alt"
             tk.save()
 
-            for l in ['it', 'en', 'es']:
+            for _l in ['it', 'en', 'es']:
                 tkl = ThesaurusKeywordLabel()
                 tkl.keyword = tk
-                tkl.lang = l
-                tkl.label = keyword + "_l_" + l + "_t_" + name
+                tkl.lang = _l
+                tkl.label = f"{keyword}_l_{_l}_t_{name}"
                 tkl.save()
+
+
+def get_all_lang_available_with_title(items: List, LANG_ATTRIB: str):
+    return [(item.attrib.get(LANG_ATTRIB), item.text) for item in items]
+
+
+def determinate_value(available_lang: List, default_lang: str):
+    sorted_lang = sorted(available_lang, key=lambda lang: '' if lang[0] is None else lang[0])
+    for item in sorted_lang:
+        if item[0] is None:
+            return item[1]
+        elif item[0] == default_lang:
+            return item[1]
+    return available_lang[0][1]

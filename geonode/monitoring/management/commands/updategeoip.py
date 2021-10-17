@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -41,7 +40,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('-f', '--file', dest='file', default=settings.GEOIP_PATH,
-                            help=_("Write result to file, default GEOIP_PATH: {}".format(settings.GEOIP_PATH)))
+                            help=_(f"Write result to file, default GEOIP_PATH: {settings.GEOIP_PATH}"))
         parser.add_argument('-u', '--url', dest='url', default=URL,
                             help=_("Fetch database from specific url. If nothing provided, default {} will be used"))
         parser.add_argument('-o', '--overwrite', dest='overwrite', action='store_true', default=False,
@@ -52,7 +51,6 @@ class Command(BaseCommand):
             return
 
         fname = options['file']
-        fbase = '.'.join(os.path.basename(options['url']).split('.')[:-1])
         if not options['overwrite'] and os.path.exists(fname):
             logger.warning("File exists, won't overwrite %s", fname)
             return
@@ -68,10 +66,10 @@ class Command(BaseCommand):
         block_size = 1024
         wrote = 0
         with open('output.bin', 'wb') as f:
-            for data in tqdm(r.iter_content(block_size), total=math.ceil(total_size//block_size) , unit='KB', unit_scale=False):
-                wrote = wrote  + len(data)
+            for data in tqdm(r.iter_content(block_size), total=math.ceil(total_size // block_size), unit='KB', unit_scale=False):  # noqa
+                wrote = wrote + len(data)
                 f.write(data)
-        logger.info(" total_size [%d] / wrote [%d] " % (total_size, wrote))
+        logger.info(f" total_size [{total_size}] / wrote [{wrote}] ")
         if total_size != 0 and wrote != total_size:
             logger.info("ERROR, something went wrong")
         else:
@@ -84,7 +82,6 @@ class Command(BaseCommand):
             os.remove('output.bin')
         except OSError:
             pass
-
 
     def handle_new_format(self, f, fname):
         try:
@@ -107,7 +104,6 @@ class Command(BaseCommand):
         except Exception as err:
             logger.error("Cannot process %s: %s", f, err, exc_info=err)
 
-
     def handle_old_format(self, f, fname):
         try:
             with gzip.GzipFile(fileobj=f) as zfile:
@@ -120,6 +116,6 @@ class Command(BaseCommand):
                         try:
                             os.remove(fname)
                         except OSError:
-                            logger.debug('Could not delete file %s' % fname)
+                            logger.debug(f'Could not delete file {fname}')
         except Exception as err:
             logger.error("Cannot process %s: %s", f, err, exc_info=err)

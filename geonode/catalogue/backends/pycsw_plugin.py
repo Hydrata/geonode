@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -27,7 +26,6 @@ from django.conf import settings
 from pycsw.core.repository import Repository, query_spatial, get_geometry_area
 
 from geonode.base.models import ResourceBase
-from geonode.layers.models import Layer
 
 from pycsw.core import util
 
@@ -66,7 +64,7 @@ class GeoNodeRepository(Repository):
         if self.dbtype == 'postgis':
             self.dbtype = 'postgresql+postgis+wkt'
 
-        if self.dbtype in ['sqlite', 'sqlite3']:  # load SQLite query bindings
+        if self.dbtype in {'sqlite', 'sqlite3'}:  # load SQLite query bindings
             connection.connection.create_function(
                 'query_spatial', 4, query_spatial)
             connection.connection.create_function(
@@ -107,14 +105,10 @@ class GeoNodeRepository(Repository):
         Query by list of identifiers
         """
 
-        results = self._get_repo_filter(
-            Layer.objects).filter(
-            uuid__in=ids).all()
-
-        if len(results) == 0:  # try services
-            results = self._get_repo_filter(
-                ResourceBase.objects).filter(
-                uuid__in=ids).all()
+        results = self\
+            ._get_repo_filter(ResourceBase.objects)\
+            .filter(uuid__in=ids)\
+            .all()
 
         return results
 
@@ -124,14 +118,14 @@ class GeoNodeRepository(Repository):
         Query by property domain values
         """
 
-        objects = self._get_repo_filter(Layer.objects)
+        objects = self._get_repo_filter(ResourceBase.objects)
 
         if domainquerytype == 'range':
             return [tuple(objects.aggregate(
                 Min(domain), Max(domain)).values())]
         else:
             if count:
-                return [(d[domain], d['%s__count' % domain])
+                return [(d[domain], d[f'{domain}__count'])
                         for d in objects.values(domain).annotate(Count(domain))]
             else:
                 return objects.values_list(domain).distinct()
@@ -141,16 +135,16 @@ class GeoNodeRepository(Repository):
         Query to get latest (default) or earliest update to repository
         """
         if direction == 'min':
-            return Layer.objects.aggregate(
+            return ResourceBase.objects.aggregate(
                 Min('last_updated'))['last_updated__min'].strftime('%Y-%m-%dT%H:%M:%SZ')
-        return self._get_repo_filter(Layer.objects).aggregate(
+        return self._get_repo_filter(ResourceBase.objects).aggregate(
             Max('last_updated'))['last_updated__max'].strftime('%Y-%m-%dT%H:%M:%SZ')
 
     def query_source(self, source):
         """
         Query by source
         """
-        return self._get_repo_filter(Layer.objects).filter(url=source)
+        return self._get_repo_filter(ResourceBase.objects).filter(url=source)
 
     def query(self, constraint, sortby=None, typenames=None,
               maxrecords=10, startposition=0):
@@ -161,15 +155,17 @@ class GeoNodeRepository(Repository):
         # run the raw query and get total
         # we want to exclude layers which are not valid, as it is done in the
         # search engine
+        pycsw_filters = settings.PYCSW.get('FILTER', {'resource_type__in': ['dataset']})
+
         if 'where' in constraint:  # GetRecords with constraint
             query = self._get_repo_filter(
-                Layer.objects).filter(alternate__isnull=False).extra(
+                ResourceBase.objects.filter(**pycsw_filters)).extra(
                 where=[
                     constraint['where']],
                 params=constraint['values'])
         else:  # GetRecords sans constraint
             query = self._get_repo_filter(
-                Layer.objects).filter(alternate__isnull=False)
+                ResourceBase.objects.filter(**pycsw_filters))
 
         total = query.count()
 
@@ -188,7 +184,7 @@ class GeoNodeRepository(Repository):
                                )[startposition:startposition + int(maxrecords)]]
             else:
                 if sortby['order'] == 'DESC':
-                    pname = '-%s' % sortby['propertyname']
+                    pname = f"-{sortby['propertyname']}"
                 else:
                     pname = sortby['propertyname']
                 return [str(total),

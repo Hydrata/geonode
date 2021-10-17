@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -88,9 +87,10 @@ def update_profile(sociallogin):
         for field in profile_fields:
             try:
                 extractor_method = getattr(
-                    extractor, "extract_{}".format(field))
+                    extractor, f"extract_{field}")
                 value = extractor_method(sociallogin.account.extra_data)
-                user_field(user, field, value)
+                if not user_field(user, field):
+                    user_field(user, field, value)
             except (AttributeError, NotImplementedError):
                 pass  # extractor doesn't define a method for extracting field
     return user
@@ -138,7 +138,7 @@ class LocalAccountAdapter(DefaultAccountAdapter, BaseInvitationsAdapter):
         user = context.get("inviter") if context.get("inviter") else context.get("user")
         full_name = " ".join((user.first_name, user.last_name)) if user.first_name or user.last_name else None
         user_groups = GroupProfile.objects.filter(
-            slug__in=user.groupmember_set.filter().values_list("group__slug", flat=True))
+            slug__in=user.groupmember_set.all().values_list("group__slug", flat=True))
         enhanced_context = context.copy()
         enhanced_context.update({
             "username": user.username,
@@ -153,7 +153,7 @@ class LocalAccountAdapter(DefaultAccountAdapter, BaseInvitationsAdapter):
         return enhanced_context
 
     def save_user(self, request, user, form, commit=True):
-        user = super(LocalAccountAdapter, self).save_user(
+        user = super().save_user(
             request, user, form, commit=commit)
         if settings.ACCOUNT_APPROVAL_REQUIRED:
             user.is_active = False
@@ -179,13 +179,13 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
 
     def populate_user(self, request, sociallogin, data):
         """This method is called when a new sociallogin is created"""
-        user = super(SocialAccountAdapter, self).populate_user(
+        user = super().populate_user(
             request, sociallogin, data)
         update_profile(sociallogin)
         return user
 
     def save_user(self, request, sociallogin, form=None):
-        user = super(SocialAccountAdapter, self).save_user(
+        user = super().save_user(
             request, sociallogin, form=form)
         extractor = get_data_extractor(sociallogin.account.provider)
         try:

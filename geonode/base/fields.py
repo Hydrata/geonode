@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -27,4 +26,4 @@ class MultiThesauriField(forms.ModelMultipleChoiceField):
         # Note: Not using .get() because filter()[0] is used in original
         # code. The hard-coded language is currently used throughout
         # geonode.
-        return obj.keyword.filter(lang='en').first().label
+        return obj.keyword.first().label

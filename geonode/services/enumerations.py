@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -42,19 +41,20 @@ LIVE = "X"
 OPENGEOPORTAL = "O"
 
 SERVICE_TYPES = (
-    (AUTO, _('Auto-detect')),
+    # (AUTO, _('Auto-detect')),
     (OWS, _('Paired WMS/WFS/WCS')),
     (WMS, _('Web Map Service')),
-    (CSW, _('Catalogue Service')),
-    (REST_MAP, _('ArcGIS REST MapServer')),
-    (REST_IMG, _('ArcGIS REST ImageServer')),
-    (OGP, _('OpenGeoPortal')),
-    (HGL, _('Harvard Geospatial Library')),
+    # (CSW, _('Catalogue Service')),
+    # (REST_MAP, _('ArcGIS REST MapServer')),
+    # (REST_IMG, _('ArcGIS REST ImageServer')),
+    # (OGP, _('OpenGeoPortal')),
+    # (HGL, _('Harvard Geospatial Library')),
     (GN_WMS, _('GeoNode (Web Map Service)')),
-    (GN_CSW, _('GeoNode (Catalogue Service)')),
+    # (GN_CSW, _('GeoNode (Catalogue Service)')),
 )
 
 GXP_PTYPES = {
+    'AUTO': 'gxp_wmscsource',
     'OWS': 'gxp_wmscsource',
     'WMS': 'gxp_wmscsource',
     'WFS': 'gxp_wmscsource',
@@ -63,6 +63,11 @@ GXP_PTYPES = {
     'REST_IMG': 'gxp_arcrestsource',
     'HGL': 'gxp_hglsource',
     'GN_WMS': 'gxp_geonodecataloguesource',
+}
+
+HARVESTER_TYPES = {
+    'WMS': 'geonode.harvesting.harvesters.wms.OgcWmsHarvester',
+    'GN_WMS': 'geonode.harvesting.harvesters.geonodeharvester.GeonodeLegacyHarvester',
 }
 
 QUEUED = "QUEUED"

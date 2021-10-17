@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,7 +16,6 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 import os
 import pytz
 import queue
@@ -26,7 +24,6 @@ import xmljson
 import requests
 import threading
 import traceback
-import timeout_decorator
 
 from hashlib import md5
 from math import floor, ceil
@@ -35,13 +32,13 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup as bs
 from dateutil.tz import tzlocal
 from datetime import datetime, timedelta
-from defusedxml import lxml as dlxml
+from owslib.etree import etree as dlxml
 
 from django.conf import settings
 from django.db.models.fields.related import RelatedField
 
+from geonode.tasks.tasks import AcquireLock
 from geonode.settings import DATETIME_INPUT_FORMATS
-
 
 GS_FORMAT = '%Y-%m-%dT%H:%M:%S'  # 2010-06-20T2:00:00
 
@@ -51,7 +48,7 @@ log = logging.getLogger(__name__)
 class MonitoringHandler(logging.Handler):
 
     def __init__(self, service, *args, **kwargs):
-        super(MonitoringHandler, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.service = service
 
     def emit(self, record):
@@ -77,7 +74,7 @@ class RequestToMonitoringThread(threading.Thread):
     q = queue.Queue()
 
     def __init__(self, service, *args, **kwargs):
-        super(RequestToMonitoringThread, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.service = service
 
     def add(self, req, resp):
@@ -95,7 +92,7 @@ class RequestToMonitoringThread(threading.Thread):
                 RequestEvent.from_geonode(self.service, req, resp)
 
 
-class GeoServerMonitorClient(object):
+class GeoServerMonitorClient:
 
     REPORT_FORMATS = ('html', 'xml', 'json',)
 
@@ -112,7 +109,7 @@ class GeoServerMonitorClient(object):
             return href.geturl()
         if format in self.REPORT_FORMATS:
             href, ext = os.path.splitext(href.geturl())
-            return '{}.{}'.format(href, format)
+            return f'{href}.{format}'
         return format
 
     def get_requests(self, format=None, since=None, until=None):
@@ -121,7 +118,7 @@ class GeoServerMonitorClient(object):
         """
         from requests.auth import HTTPBasicAuth
 
-        rest_url = '{}rest/monitor/requests.html'.format(self.base_url)
+        rest_url = f'{self.base_url}rest/monitor/requests.html'
         qargs = {}
         if since:
             # since = since.astimezone(utc)
@@ -130,7 +127,7 @@ class GeoServerMonitorClient(object):
             # until = until.astimezone(utc)
             qargs['to'] = until.strftime(GS_FORMAT)
         if qargs:
-            rest_url = '{}?{}'.format(rest_url, urlencode(qargs))
+            rest_url = f'{rest_url}?{urlencode(qargs)}'
 
         log.debug('checking', rest_url)
         username = settings.OGC_SERVER['default']['USER']
@@ -148,14 +145,14 @@ class GeoServerMonitorClient(object):
             if data:
                 yield data
             else:
-                log.warning("Skipping payload for {}".format(href))
+                log.warning(f"Skipping payload for {href}")
 
     def get_request(self, href, format=format):
         from requests.auth import HTTPBasicAuth
 
         username = settings.OGC_SERVER['default']['USER']
         password = settings.OGC_SERVER['default']['PASSWORD']
-        log.debug(" href: %s " % href)
+        log.debug(f" href: {href} ")
         r = requests.get(
             href,
             auth=HTTPBasicAuth(username, password),
@@ -189,10 +186,10 @@ class GeoServerMonitorClient(object):
         raise ValueError("Cannot convert from html")
 
     def to_json(self, data, from_format):
-        h = getattr(self, '_from_{}'.format(from_format), None)
+        h = getattr(self, f'_from_{from_format}', None)
         if not h or not len(data):
             raise ValueError(
-                "Cannot convert from {} - no handler".format(from_format))
+                f"Cannot convert from {from_format} - no handler")
         return h(data)
 
 
@@ -253,7 +250,7 @@ def generate_periods(since, interval, end=None, align=True):
         since_aligned = since_aligned + interval
 
 
-class TypeChecks(object):
+class TypeChecks:
     AUDIT_TYPE_JSON = 'json'
     AUDIT_TYPE_XML = 'xml'
     AUDIT_FORMATS = (AUDIT_TYPE_JSON, AUDIT_TYPE_XML,)
@@ -261,7 +258,7 @@ class TypeChecks(object):
     @classmethod
     def audit_format(cls, val):
         if val not in cls.AUDIT_FORMATS:
-            raise ValueError("Invalid value for audit format: {}".format(val))
+            raise ValueError(f"Invalid value for audit format: {val}")
         return val
 
     @staticmethod
@@ -270,7 +267,7 @@ class TypeChecks(object):
         try:
             return Host.objects.get(name=val)
         except Host.DoesNotExist:
-            raise ValueError("Host {} does not exist".format(val))
+            raise ValueError(f"Host {val} does not exist")
 
     @staticmethod
     def resource_type(val):
@@ -283,7 +280,7 @@ class TypeChecks(object):
                 rtype, rname = val.split('=')
             except (ValueError, IndexError,):
                 raise ValueError(
-                    "{} is not valid resource description".format(val))
+                    f"{val} is not valid resource description")
         return MonitoredResource.objects.get(type=rtype, name=rname)
 
     @staticmethod
@@ -291,7 +288,7 @@ class TypeChecks(object):
         from geonode.monitoring.models import MonitoredResource
         if val in MonitoredResource._TYPES:
             return val
-        raise ValueError("Invalid monitored resource type: {}".format(val))
+        raise ValueError(f"Invalid monitored resource type: {val}")
 
     @staticmethod
     def metric_name_type(val):
@@ -299,7 +296,7 @@ class TypeChecks(object):
         try:
             return Metric.objects.get(name=val)
         except Metric.DoesNotExist:
-            raise ValueError("Metric {} doesn't exist".format(val))
+            raise ValueError(f"Metric {val} doesn't exist")
 
     @staticmethod
     def service_type(val):
@@ -307,7 +304,7 @@ class TypeChecks(object):
         try:
             return Service.objects.get(name=val)
         except Service.DoesNotExist:
-            raise ValueError("Service {} does not exist".format(val))
+            raise ValueError(f"Service {val} does not exist")
 
     @staticmethod
     def service_type_type(val):
@@ -315,7 +312,7 @@ class TypeChecks(object):
         try:
             return ServiceType.objects.get(name=val)
         except ServiceType.DoesNotExist:
-            raise ValueError("Service Type {} does not exist".format(val))
+            raise ValueError(f"Service Type {val} does not exist")
 
     @staticmethod
     def label_type(val):
@@ -327,7 +324,7 @@ class TypeChecks(object):
                 return MetricLabel.objects.get(name=val)
             except MetricLabel.DoesNotExist:
                 pass
-        raise ValueError("Invalid label value: {}".format(val))
+        raise ValueError(f"Invalid label value: {val}")
 
     @staticmethod
     def user_type(val):
@@ -336,7 +333,7 @@ class TypeChecks(object):
             if MetricLabel.objects.filter(user=val).count():
                 return val
         except MetricLabel.DoesNotExist:
-            raise ValueError("Invalid user value: {}".format(val))
+            raise ValueError(f"Invalid user value: {val}")
 
     @staticmethod
     def event_type_type(val):
@@ -344,7 +341,7 @@ class TypeChecks(object):
         try:
             return EventType.objects.get(name=val)
         except EventType.DoesNotExist:
-            raise ValueError("Event Type {} doesn't exist".format(val))
+            raise ValueError(f"Event Type {val} doesn't exist")
 
     @staticmethod
     def ows_service_type(val):
@@ -353,7 +350,7 @@ class TypeChecks(object):
         elif str(val).lower() in ("false", "0"):
             return False
         else:
-            raise ValueError("Invalid ows_service value {}".format(val))
+            raise ValueError(f"Invalid ows_service value {val}")
 
 
 def dump(obj, additional_fields=tuple()):
@@ -368,7 +365,7 @@ def dump(obj, additional_fields=tuple()):
         if isinstance(field, RelatedField):
             if val is not None:
                 v = val
-                val = {'class': '{}.{}'.format(val.__class__.__module__, val.__class__.__name__),
+                val = {'class': f'{val.__class__.__module__}.{val.__class__.__name__}',
                        'id': val.pk}
                 if hasattr(v, 'name'):
                     val['name'] = v.name
@@ -402,8 +399,7 @@ def extend_datetime_input_formats(formats):
 
 
 def collect_metric(**options):
-    from geonode.celery_app import app
-    from geonode.tasks.tasks import memcache_lock
+    # Avoid possible module circular dependency issues
     from geonode.monitoring.models import Service
     from geonode.monitoring.collector import CollectorAPI
 
@@ -413,65 +409,62 @@ def collect_metric(**options):
     # of the name.
     name = b'collect_metric'
     hexdigest = md5(name).hexdigest()
-    lock_id = '{0}-lock-{1}'.format(name, hexdigest)
-    _start_time = datetime.utcnow().isoformat()
-    log.info('[{}] Collecting Metrics - started @ {}'.format(
-        lock_id,
-        _start_time))
-    with memcache_lock(lock_id, app.oid) as acquired:
-        if acquired:
-            oservice = options['service']
-            if not oservice:
-                services = Service.objects.all()
-            else:
-                services = [oservice]
-            if options['list_services']:
-                print('available services')
+    lock_id = f'{name.decode()}-lock-{hexdigest}'
+    _start_time = _end_time = datetime.utcnow().isoformat()
+    log.info(f'[{lock_id}] Collecting Metrics - started @ {_start_time}')
+    with AcquireLock(lock_id) as lock:
+        if lock.acquire() is True:
+            log.info(f'[{lock_id}] Collecting Metrics - [...acquired lock] @ {_start_time}')
+            try:
+                oservice = options['service']
+                if not oservice:
+                    services = Service.objects.all()
+                else:
+                    services = [oservice]
+                if options['list_services']:
+                    print('available services')
+                    for s in services:
+                        print('  ', s.name, '(', s.url, ')')
+                        print('   type', s.service_type.name)
+                        print('   running on', s.host.name, s.host.ip)
+                        print('   active:', s.active)
+                        if s.last_check:
+                            print('    last check:', s.last_check)
+                        else:
+                            print('    not checked yet')
+                        print(' ')
+                    return
+                c = CollectorAPI()
                 for s in services:
-                    print('  ', s.name, '(', s.url, ')')
-                    print('   type', s.service_type.name)
-                    print('   running on', s.host.name, s.host.ip)
-                    print('   active:', s.active)
-                    if s.last_check:
-                        print('    last check:', s.last_check)
-                    else:
-                        print('    not checked yet')
-                    print(' ')
-                return
-            c = CollectorAPI()
-            for s in services:
-                try:
-                    run_check(s,
-                              collector=c,
-                              since=options['since'],
-                              until=options['until'],
-                              force_check=options['force_check'],
-                              format=options['format'])
-                except Exception as err:
-                    log.error("Cannot collect from %s: %s", s, err, exc_info=err)
-                    if options['halt_on_errors']:
-                        raise
-            if not options['do_not_clear']:
-                log.debug("Clearing old data")
-                c.clear_old_data()
-            if options['emit_notifications']:
-                log.debug("Processing notifications for %s", options['until'])
-                # s = Service.objects.first()
-                # interval = s.check_interval
-                # now = datetime.utcnow().replace(tzinfo=pytz.utc)
-                # notifications_check = now - interval
-                c.emit_notifications()  # notifications_check))
-            _end_time = datetime.utcnow().isoformat()
-            log.info('[{}] Collecting Metrics - finished @ {}'.format(
-                lock_id,
-                _end_time))
+                    try:
+                        run_check(
+                            s,
+                            collector=c,
+                            since=options['since'],
+                            until=options['until'],
+                            force_check=options['force_check'],
+                            format=options['format'])
+                    except Exception as e:
+                        log.warning(e)
+                if not options['do_not_clear']:
+                    log.info("Clearing old data")
+                    c.clear_old_data()
+                if options['emit_notifications']:
+                    log.info("Processing notifications for %s", options['until'])
+                    # s = Service.objects.first()
+                    # interval = s.check_interval
+                    # now = datetime.utcnow().replace(tzinfo=pytz.utc)
+                    # notifications_check = now - interval
+                    c.emit_notifications()  # notifications_check))
+                _end_time = datetime.utcnow().isoformat()
+                log.info(f'[{lock_id}] Collecting Metrics - finished @ {_end_time}')
+            except Exception as e:
+                log.info(f'[{lock_id}] Collecting Metrics - errored @ {_end_time}')
+                log.exception(e)
+    log.info(f'[{lock_id}] Collecting Metrics - exit @ {_end_time}')
     return (_start_time, _end_time)
 
 
-LOCAL_TIMEOUT = 8600
-
-
-@timeout_decorator.timeout(LOCAL_TIMEOUT)
 def run_check(service, collector, since=None, until=None, force_check=None, format=None):
     from geonode.monitoring.service_handlers import get_for_service
 

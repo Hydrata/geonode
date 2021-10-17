@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -17,7 +16,6 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
 import logging
 
 from django.conf import settings
@@ -31,45 +29,29 @@ from django.shortcuts import redirect
 from django.shortcuts import render
 from django.template import loader
 from django.utils.translation import ugettext as _
-from django.views.decorators.csrf import requires_csrf_token
-from django.views.decorators.cache import cache_control
 from django.contrib.auth.decorators import login_required
+
+from geonode.base.models import ResourceBase
 from geonode.security.views import _perms_info_json
-from geonode.layers.models import Layer
-from geonode.proxy.views import proxy
-from urllib.parse import urljoin
-from urllib.parse import quote
-from .serviceprocessors import get_service_handler
-from . import enumerations
-from . import forms
-from .models import HarvestJob
+from geonode.security.utils import get_visible_resources
+
 from .models import Service
-from . import tasks
+from . import forms, enumerations
+from .serviceprocessors import get_service_handler
 
-logger = logging.getLogger("geonode.core.layers.views")
-
-
-@requires_csrf_token
-@cache_control(public=True, must_revalidate=True, max_age=604800)
-def service_proxy(request, service_id):
-    service = get_object_or_404(Service, pk=service_id)
-    if not service.proxy_base:
-        service_url = service.base_url
-    else:
-        service_url = "{ows_url}?{ows_request}".format(
-            ows_url=service.base_url, ows_request=request.META['QUERY_STRING'])
-        if urljoin(settings.SITEURL, reverse('proxy')) != service.proxy_base:
-            service_url = "{proxy_base}?url={service_url}".format(proxy_base=service.proxy_base,
-                                                                  service_url=quote(service_url, safe=''))
-    return proxy(request, url=service_url, sec_chk_hosts=False)
+logger = logging.getLogger(__name__)
 
 
 def services(request):
     """This view shows the list of all registered services"""
+
     return render(
         request,
         "services/service_list.html",
-        {"services": Service.objects.all()}
+        {
+            "services": Service.objects.all(),
+            "can_add_resources": request.user.has_perm('base.add_resourcebase')
+        }
     )
 
 
@@ -82,12 +64,16 @@ def register_service(request):
             service_handler = form.cleaned_data["service_handler"]
             service = service_handler.create_geonode_service(
                 owner=request.user)
-            service.full_clean()
+            try:
+                service.full_clean()
+            except Exception as e:
+                raise Http404(str(e))
             service.save()
             service.keywords.add(*service_handler.get_keywords())
-            service.set_default_permissions()
+
             if service_handler.indexing_method == enumerations.CASCADED:
-                service_handler.create_cascaded_store()
+                service_handler.create_cascaded_store(service)
+            service_handler.geonode_service_id = service.id
             request.session[service_handler.url] = service_handler
             logger.debug("Added handler to the session")
             messages.add_message(
@@ -117,79 +103,91 @@ def _get_service_handler(request, service):
     feature many layers.
     """
     service_handler = get_service_handler(
-        service.base_url, service.proxy_base, service.type)
-    request.session[service.base_url] = service_handler
+        service.service_url, service.type, service.id)
+    if not service_handler.geonode_service_id:
+        service_handler.geonode_service_id = service.id
+    request.session[service.service_url] = service_handler
     logger.debug("Added handler to the session")
     return service_handler
 
 
-@login_required
-def harvest_resources(request, service_id):
-    service = get_object_or_404(Service, pk=service_id)
-    try:
-        handler = request.session[service.base_url]
-    except KeyError:  # handler is not saved on the session, recreate it
-        return redirect(
-            reverse("rescan_service", kwargs={"service_id": service.id})
-        )
-    available_resources = handler.get_resources()
+def harvest_resources_handle_get(request, service, handler):
+    has_unharvested_resources = handler.has_unharvested_resources(service)
+
+    available_resources = None
+    if has_unharvested_resources:
+        available_resources = handler.get_resources()
+
     is_sync = getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False)
     errored_state = False
-    if request.method == "GET":
-        already_harvested = HarvestJob.objects.values_list(
-            "resource_id", flat=True).filter(service=service, status=enumerations.PROCESSED)
-        if available_resources:
-            not_yet_harvested = [
-                r for r in available_resources if str(r.id) not in already_harvested]
-            not_yet_harvested.sort(key=lambda resource: resource.id)
-        else:
-            not_yet_harvested = ['Cannot parse any resource at this time!']
-            errored_state = True
-        paginator = Paginator(
-            not_yet_harvested, getattr(settings, "CLIENT_RESULTS_LIMIT", 100))
-        page = request.GET.get('page')
-        try:
-            harvestable_resources = paginator.page(page)
-        except PageNotAnInteger:
-            harvestable_resources = paginator.page(1)
-        except EmptyPage:
-            harvestable_resources = paginator.page(paginator.num_pages)
+    _ = _perms_info_json(service)
 
-        filter_row = [{}, {"id": 'id-filter', "data_key": "id"},
-                      {"id": 'name-filter', "data_key": "title"},
-                      {"id": 'desc-filter', "data_key": "abstract"}]
-        result = render(
-            request,
-            "services/service_resources_harvest.html",
-            {
-                "service_handler": handler,
-                "service": service,
-                "importable": not_yet_harvested,
-                "resources": harvestable_resources,
-                "requested": request.GET.getlist("resource_list"),
-                "is_sync": is_sync,
-                "errored_state": errored_state,
-                "filter_row": filter_row,
-            }
-        )
-    elif request.method == "POST":
+    if available_resources:
+        not_yet_harvested = list(available_resources)
+    else:
+        not_yet_harvested = ['No resource available from the remote service currently!']
+        try:
+            if service.harvester and service.harvester.latest_refresh_session:
+                _progress = service.harvester.latest_refresh_session.get_progress_percentage()
+                not_yet_harvested = [f'Harvester is still updating the available resources, please come back later. ({_progress}%)']
+        except Exception:
+            pass
+        errored_state = True
+    paginator = Paginator(
+        not_yet_harvested, getattr(settings, "CLIENT_RESULTS_LIMIT", 100))
+    page = request.GET.get('page')
+    try:
+        harvestable_resources = paginator.page(page)
+    except PageNotAnInteger:
+        harvestable_resources = paginator.page(1)
+    except EmptyPage:
+        harvestable_resources = paginator.page(paginator.num_pages)
+
+    filter_row = [
+        {"id": 'unique-identifier-filter', "data_key": "name"},
+        {"id": 'title-filter', "data_key": "title"},
+        {"id": 'desc-filter', "data_key": "abstract"},
+        {"id": 'type-filter', "data_key": "type"}
+    ]
+
+    perms_list = list(
+        service.get_self_resource().get_user_perms(request.user)
+        .union(service.get_user_perms(request.user))
+    )
+
+    result = render(
+        request,
+        "services/service_resources_harvest.html",
+        {
+            "service_handler": handler,
+            "service": service,
+            "importable": not_yet_harvested,
+            "resources": harvestable_resources,
+            "requested": request.GET.getlist("resource_list"),
+            "is_sync": is_sync,
+            "errored_state": errored_state,
+            "can_add_resources": request.user.has_perm('base.add_resourcebase'),
+            "filter_row": filter_row,
+            "permissions_list": perms_list
+
+        }
+    )
+    return result
+
+
+def harvest_resources_handle_post(request, service, handler):
+    has_unharvested_resources = handler.has_unharvested_resources(service)
+
+    if has_unharvested_resources:
+        is_sync = getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False)
         requested = request.POST.getlist("resource_list")
         requested.extend(request.GET.getlist("resource_list"))
         # Let's remove duplicates
         requested = list(set(requested))
-        resources_to_harvest = []
-        for id in _gen_harvestable_ids(requested, available_resources):
-            logger.debug("id: {}".format(id))
-            harvest_job, created = HarvestJob.objects.get_or_create(
-                service=service,
-                resource_id=id
-            )
-            if created or harvest_job.status != enumerations.PROCESSED:
-                resources_to_harvest.append(id)
-                tasks.harvest_resource.apply_async((harvest_job.id,))
-            else:
-                logger.warning(
-                    "resource {} already has a harvest job".format(id))
+        for resource_id in requested:
+            logger.debug(f"harvesting resource id {resource_id}...")
+            handler.harvest_resource(resource_id, service)
+            logger.debug(f"...Resource id {resource_id} harvested successfully")
         msg_async = _("The selected resources are being imported")
         msg_sync = _("The selected resources have been imported")
         messages.add_message(
@@ -197,37 +195,47 @@ def harvest_resources(request, service_id):
             messages.SUCCESS,
             msg_sync if is_sync else msg_async
         )
-        go_to = (
-            "harvest_resources" if handler.has_unharvested_resources(
-                service) else "service_detail"
-        )
-        result = redirect(reverse(go_to, kwargs={"service_id": service.id}))
-    else:
-        result = None
-    return result
+
+    go_to = (
+        "harvest_resources" if has_unharvested_resources else "service_detail"
+    )
+    return redirect(reverse(go_to, kwargs={"service_id": service.id}))
+
+
+@login_required
+def harvest_resources(request, service_id):
+    service = get_object_or_404(Service, pk=service_id)
+    try:
+        handler = request.session[service.service_url]
+        if not handler.geonode_service_id:
+            handler.geonode_service_id = service_id
+    except KeyError:  # handler is not saved on the session, recreate it
+        handler = _get_service_handler(request, service)
+        if not handler.geonode_service_id:
+            handler.geonode_service_id = service_id
+    if request.method == "GET":
+        return harvest_resources_handle_get(request, service, handler)
+    elif request.method == "POST":
+        return harvest_resources_handle_post(request, service, handler)
 
 
 @login_required
 def harvest_single_resource(request, service_id, resource_id):
     service = get_object_or_404(Service, pk=service_id)
     handler = _get_service_handler(request, service)
+    if not handler.geonode_service_id:
+        handler.geonode_service_id = service_id
     try:  # check that resource_id is valid for this handler
         handler.get_resource(resource_id)
-    except KeyError:
-        raise Http404()
-    harvest_job, created = HarvestJob.objects.get_or_create(
-        service=service,
-        resource_id=resource_id,
-    )
-    if not created and harvest_job.status == enumerations.IN_PROCESS:
-        raise HttpResponse(
-            _("Resource is already being processed"), status=409)
-    else:
-        tasks.harvest_resource.apply_async((harvest_job.id,))
+    except KeyError as e:
+        raise Http404(str(e))
+    logger.debug(f"harvesting resource id {resource_id}...")
+    handler.harvest_resource(resource_id, service)
+    logger.debug(f"...Resource id {resource_id} harvested successfully")
     messages.add_message(
         request,
         messages.SUCCESS,
-        _("Resource {} is being processed".format(resource_id))
+        _(f"Resource {resource_id} is being processed")
     )
     return redirect(
         reverse("service_detail",
@@ -235,19 +243,13 @@ def harvest_single_resource(request, service_id, resource_id):
     )
 
 
-def _gen_harvestable_ids(requested_ids, available_resources):
-    available_resource_ids = [str(r.id) for r in available_resources]
-    for id in requested_ids:
-        identifier = str(id)
-        if identifier in available_resource_ids:
-            yield identifier
-
-
 @login_required
 def rescan_service(request, service_id):
     service = get_object_or_404(Service, pk=service_id)
     try:
         _get_service_handler(request, service)
+        if service.harvester:
+            service.harvester.initiate_update_harvestable_resources()
     except Exception:
         return render(
             request,
@@ -264,18 +266,40 @@ def rescan_service(request, service_id):
 @login_required
 def service_detail(request, service_id):
     """This view shows the details of a service"""
-    service = get_object_or_404(Service, pk=service_id)
-    job_statuses = (
-        enumerations.QUEUED,
-        enumerations.IN_PROCESS,
-        enumerations.FAILED,
+
+    services = Service.objects.filter(resourcebase_ptr_id=service_id)
+
+    if not services.exists():
+        messages.add_message(
+            request,
+            messages.ERROR,
+            _("You dont have enougth rigths to see the resource detail")
+        )
+        return redirect(
+            reverse("services")
+        )
+    service = services.first()
+
+    permissions_json = _perms_info_json(service)
+
+    perms_list = list(
+        service.get_self_resource().get_user_perms(request.user)
+        .union(service.get_user_perms(request.user))
     )
-    resources_being_harvested = HarvestJob.objects.filter(
-        service=service, status__in=job_statuses)
-    already_imported_layers = Layer.objects.filter(remote_service=service)
-    service_list = service.service_set.all()
-    all_resources = (list(resources_being_harvested) +
-                     list(already_imported_layers) + list(service_list))
+
+    harvested_resources_ids = []
+    if service.harvester:
+        _h = service.harvester
+        harvested_resources_ids = list(_h.harvestable_resources.filter(
+            should_be_harvested=True, geonode_resource__isnull=False).values_list("geonode_resource__id", flat=True))
+    already_imported_datasets = get_visible_resources(
+        queryset=ResourceBase.objects.filter(id__in=harvested_resources_ids),
+        user=request.user
+    )
+    resources_being_harvested = []
+
+    all_resources = (list(resources_being_harvested) + list(already_imported_datasets))
+
     paginator = Paginator(
         all_resources,
         getattr(settings, "CLIENT_RESULTS_LIMIT", 25),
@@ -295,7 +319,7 @@ def service_detail(request, service_id):
     # with many resources, keeping the handler in the session leads to degraded
     # performance
     try:
-        request.session.pop(service.base_url)
+        request.session.pop(service.service_url)
     except KeyError:
         pass
 
@@ -304,13 +328,14 @@ def service_detail(request, service_id):
         template_name="services/service_detail.html",
         context={
             "service": service,
-            "layers": (r for r in resources if isinstance(r, Layer)),
-            "services": (r for r in resources if isinstance(r, Service)),
-            "resource_jobs": (
-                r for r in resources if isinstance(r, HarvestJob)),
-            "permissions_json": _perms_info_json(service),
+            "datasets": already_imported_datasets,
+            # "resource_jobs": (r for r in resources if isinstance(r, HarvestJob)),
+            "resource_jobs": (),
+            "permissions_json": permissions_json,
+            "permissions_list": perms_list,
+            "can_add_resorces": request.user.has_perm('base.add_resourcebase'),
             "resources": resources,
-            "total_resources": len(all_resources),
+            "total_resources": len(already_imported_datasets),
         }
     )
 
@@ -360,11 +385,11 @@ def remove_service(request, service_id):
         return render(request, "services/service_remove.html",
                       {"service": service})
     elif request.method == 'POST':
-        service.layer_set.all().delete()
+        service.dataset_set.all().delete()
         service.delete()
         messages.add_message(
             request,
             messages.INFO,
-            _("Service {} has been deleted".format(service.name))
+            _(f"Service {service.name} has been deleted")
         )
         return HttpResponseRedirect(reverse("services"))

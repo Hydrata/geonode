@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -33,7 +32,7 @@ class DefaultMangler(json.JSONDecoder):
         self.datastore = kwargs.get('datastore', '')
         self.siteurl = kwargs.get('siteurl', '')
 
-        super(DefaultMangler, self).__init__(*args)
+        super().__init__(*args)
 
     def default(self, obj):
         # Let the base class default method raise the TypeError
@@ -43,7 +42,7 @@ class DefaultMangler(json.JSONDecoder):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(DefaultMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....
@@ -61,7 +60,7 @@ class ResourceBaseMangler(DefaultMangler):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(ResourceBaseMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....
@@ -119,7 +118,7 @@ class ResourceBaseMangler(DefaultMangler):
         obj = dict()
 
         obj['pk'] = pk
-        obj['model'] = 'layers.uploadsession'
+        obj['model'] = 'datasets.uploadsession'
 
         obj['fields'] = dict()
         obj['fields']['user'] = owner
@@ -142,14 +141,14 @@ class LayerMangler(DefaultMangler):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(LayerMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....
         for obj in default_obj:
             obj['pk'] = obj['pk'] + self.basepk
 
-            # Retrieve the ResourceBase associated to this Layer
+            # Retrieve the ResourceBase associated to this Dataset
             from geonode.base.models import ResourceBase
 
             resource = ResourceBase.objects.get(pk=obj['pk'])
@@ -199,7 +198,7 @@ class LayerAttributesMangler(DefaultMangler):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(LayerAttributesMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....
@@ -221,14 +220,14 @@ class MapMangler(DefaultMangler):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(MapMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....
         for obj in default_obj:
             obj['pk'] = obj['pk'] + self.basepk
 
-            # Retrieve the ResourceBase associated to this Layer
+            # Retrieve the ResourceBase associated to this Dataset
             from geonode.base.models import ResourceBase
 
             resource = ResourceBase.objects.get(pk=obj['pk'])
@@ -270,7 +269,7 @@ class MapLayersMangler(DefaultMangler):
         """
         json_string is basicly string that you give to json.loads method
         """
-        default_obj = super(MapLayersMangler, self).decode(json_string)
+        default_obj = super().decode(json_string)
 
         # manipulate your object any way you want
         # ....

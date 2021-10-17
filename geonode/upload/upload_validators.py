@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -19,12 +18,12 @@
 #########################################################################
 
 """Tools for performing validation of uploaded spatial files."""
-
-
-from collections import namedtuple
+import re
 import os.path
 import logging
 import zipfile
+
+from collections import namedtuple
 
 from django import forms
 from django.utils.translation import ugettext as _
@@ -46,7 +45,7 @@ def _supported_type(ext, supported_types):
 
 
 def validate_uploaded_files(cleaned, uploaded_files, field_spatial_types):
-    logger.debug("uploaded_files: {}".format(uploaded_files))
+    logger.debug(f"uploaded_files: {uploaded_files}")
     requires_datastore = () if ogc_server_settings.DATASTORE else (
         'csv',
         'kml')
@@ -57,7 +56,7 @@ def validate_uploaded_files(cleaned, uploaded_files, field_spatial_types):
             "%(supported)s files are supported. You uploaded a "
             "%(uploaded)s file",
             params={
-                "supported": " , ".join([t.name for t in types]),
+                "supported": " , ".join(t.name for t in types),
                 "uploaded": base_ext
             }
         )
@@ -143,7 +142,7 @@ def _validate_shapefile_components(possible_filenames):
     for additional_component in shapefile_additional:
         for path in possible_filenames:
             additional_name = os.path.splitext(os.path.basename(path))[0]
-            matches_main_name = additional_name == base_name
+            matches_main_name = bool(re.match(base_name, additional_name, re.I))
             extension = os.path.splitext(path)[1][1:].lower()
             found_component = extension == additional_component.extension
             if found_component and matches_main_name:
@@ -152,11 +151,10 @@ def _validate_shapefile_components(possible_filenames):
         else:
             if additional_component.mandatory:
                 raise forms.ValidationError(
-                    "Could not find {!r} file, which is mandatory for "
-                    "shapefile uploads".format(
-                        additional_component.extension)
+                    f"Could not find {additional_component.extension} file, which is mandatory for "
+                    "shapefile uploads"
                 )
-    logger.debug("shapefile components: {}".format(components))
+    logger.debug(f"shapefile components: {components}")
     return components
 
 
@@ -174,8 +172,8 @@ def _validate_kml_bytes(kml_bytes, other_files):
                 "kml:Icon/kml:href/text()", namespaces=namespaces)[0].strip()
         except IndexError:
             image_path = ""
-        logger.debug("image_path: {}".format(image_path))
-        logger.debug("other_files: {}".format(other_files))
+        logger.debug(f"image_path: {image_path}")
+        logger.debug(f"other_files: {other_files}")
         if image_path not in other_files:
             raise forms.ValidationError(
                 _("Ground overlay image declared in kml file cannot be found"))
@@ -255,14 +253,14 @@ def validate_shapefile(zip_django_file):
 
 def validate_raster(contents, allow_multiple=False):
     def dupes(_a):
-        return set([x for x in _a if _a.count(x) > 1])
+        return {x for x in _a if _a.count(x) > 1}
 
     valid_extensions = None
-    raster_types = [t for t in files.types if t.layer_type == files.raster]
-    raster_exts = [".%s" % t.code for t in raster_types]
+    raster_types = [t for t in files.types if t.dataset_type == files.raster]
+    raster_exts = [f".{t.code}" for t in raster_types]
     raster_aliases = []
     for alias in [aliases for aliases in [t.aliases for t in raster_types] if aliases]:
-        raster_aliases.extend([".%s" % a for a in alias])
+        raster_aliases.extend([f".{a}" for a in alias])
     raster_exts.extend(raster_aliases)
 
     raster_files = [
@@ -271,7 +269,7 @@ def validate_raster(contents, allow_multiple=False):
         f for f in contents if os.path.splitext(str(f).lower())[1] not in raster_exts]
 
     all_extensions = [os.path.splitext(str(f))[1][1:] for f in raster_files]
-    other_extensions = tuple(set([os.path.splitext(str(f))[1][1:] for f in other_files]))
+    other_extensions = tuple({os.path.splitext(str(f))[1][1:] for f in other_files})
     valid_extensions = tuple(set(all_extensions))
     dup_extensions = tuple(dupes(all_extensions))
     if dup_extensions:

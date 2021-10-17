@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2017 OSGeo
@@ -26,17 +25,16 @@ from urllib.parse import urlparse
 from socket import gethostbyname
 from datetime import datetime, timedelta
 from decimal import Decimal
-from six import string_types
 
 from django import forms
 from django.db import models
 from django.conf import settings
 from django.http import Http404
-from jsonfield import JSONField
 
-from django.utils.translation import ugettext_noop as _
 from django.urls import reverse
 from django.contrib.auth import get_user_model
+from django.db.models.fields.json import JSONField
+from django.utils.translation import ugettext_noop as _
 
 try:
     from django.contrib.gis.geoip2 import GeoIP2 as GeoIP
@@ -84,7 +82,7 @@ class Host(models.Model):
     active = models.BooleanField(null=False, blank=False, default=True)
 
     def __str__(self):
-        return 'Host: {} ({})'.format(self.name, self.ip)
+        return f'Host: {self.name} ({self.ip})'
 
 
 class ServiceType(models.Model):
@@ -110,7 +108,7 @@ class ServiceType(models.Model):
         choices=TYPES)
 
     def __str__(self):
-        return 'Service Type: {}'.format(self.name)
+        return f'Service Type: {self.name}'
 
     @property
     def is_system_monitor(self):
@@ -137,7 +135,7 @@ class Service(models.Model):
     url = models.URLField(null=True, blank=True, default='')
 
     def __str__(self):
-        return 'Service: {}@{}'.format(self.name, self.host.name)
+        return f'Service: {self.name}@{self.host.name}'
 
     def get_metrics(self):
         return [m.metric for m in self.service_type.metric.all()]
@@ -157,7 +155,7 @@ class Service(models.Model):
 
 class MonitoredResource(models.Model):
     TYPE_EMPTY = ''
-    TYPE_LAYER = 'layer'
+    TYPE_LAYER = 'dataset'
     TYPE_MAP = 'map'
     TYPE_RESOURCE_BASE = 'resource_base'
     TYPE_DOCUMENT = 'document'
@@ -170,7 +168,7 @@ class MonitoredResource(models.Model):
               TYPE_URL, TYPE_OTHER,)
 
     TYPES = ((TYPE_EMPTY, _("No resource"),),
-             (TYPE_LAYER, _("Layer"),),
+             (TYPE_LAYER, _("Dataset"),),
              (TYPE_MAP, _("Map"),),
              (TYPE_RESOURCE_BASE, _("Resource base"),),
              (TYPE_DOCUMENT, _("Document"),),
@@ -192,7 +190,7 @@ class MonitoredResource(models.Model):
         unique_together = (('name', 'type',),)
 
     def __str__(self):
-        return 'Monitored Resource: {} {}'.format(self.name, self.type)
+        return f'Monitored Resource: {self.name} {self.type}'
 
     @classmethod
     def get(cls, resource_type, resource_name, or_create=False):
@@ -283,7 +281,7 @@ class Metric(models.Model):
         return self.AGGREGATE_MAP[self.type]
 
     def __unicode__(self):
-        return "Metric: {}".format(self.name)
+        return f"Metric: {self.name}"
 
     @property
     def is_rate(self):
@@ -321,7 +319,7 @@ class ServiceTypeMetric(models.Model):
     metric = models.ForeignKey(Metric, related_name='service_type', on_delete=models.CASCADE)
 
     def __str__(self):
-        return '{} - {}'.format(self.service_type, self.metric)
+        return f'{self.service_type} - {self.metric}'
 
 
 class EventType(models.Model):
@@ -347,7 +345,7 @@ class EventType(models.Model):
     EVENT_OTHER = 'other'  # non-ows event
     EVENT_ALL = 'all'  # all events - baseline: ows + non-ows
 
-    EVENT_TYPES = list(zip(['OWS:{}'.format(ows) for ows in _ows_types], _ows_types)) + \
+    EVENT_TYPES = list(zip([f'OWS:{ows}' for ows in _ows_types], _ows_types)) + \
         [(EVENT_OTHER, _("Not OWS"))] +\
         [(EVENT_OWS, _("Any OWS"))] +\
         [(EVENT_ALL, _("All"))] +\
@@ -368,7 +366,7 @@ class EventType(models.Model):
                             blank=False)
 
     def __str__(self):
-        return 'Event Type: {}'.format(self.name)
+        return f'Event Type: {self.name}'
 
     @classmethod
     def get(cls, service_name=None):
@@ -418,7 +416,7 @@ class RequestEvent(models.Model):
     request_path = models.TextField(blank=False, default='')
 
     # resources is a list of affected resources. it is buld as a pair of type and name:
-    #  layer=geonode:sample_layer01
+    #  layer=geonode:sample_dataset01
     # or
     #  document=documents/id
     # or
@@ -534,7 +532,7 @@ class RequestEvent(models.Model):
         Returns event type based on events
         """
         rqmeta = getattr(request, '_monitoring', {})
-        events = set(e[0] for e in rqmeta['events'])
+        events = {e[0] for e in rqmeta['events']}
         event_name = default_event_type
         if len(events) == 1:
             event_name = events.pop()
@@ -767,18 +765,20 @@ class RequestEvent(models.Model):
         rl = rd['responseLength']
         event_type_name = rd.get('service')
         if event_type_name:
-            event_type = EventType.get('OWS:{}'.format(event_type_name.upper()))
+            event_type = EventType.get(f'OWS:{event_type_name.upper()}')
         else:
             event_type = EventType.get(EventType.EVENT_GEOSERVER)
 
+        if rd.get('queryString'):
+            request_path = f"{rd['path']}?{rd['queryString']}"
+        else:
+            request_path = rd['path']
         data = {'created': start_time,
                 'received': received,
                 'host': rd['host'],
                 'event_type': event_type,
                 'service': service,
-                'request_path':
-                    '{}?{}'.format(rd['path'], rd['queryString']) if rd.get(
-                        'queryString') else rd['path'],
+                'request_path': request_path,
                 'request_method': rd['httpMethod'],
                 'response_status': rd['responseStatus'],
                 'response_size': rl[0] if isinstance(rl, list) else rl,
@@ -800,14 +800,15 @@ class RequestEvent(models.Model):
                                 'error'][
                     'class']
                 edata = '\n'.join(rd['error']['stackTrace']['trace'])
-                emessage = rd['error']['detailMessage']
+                emessage = rd['error']['detailMessage'] if 'detailMessage' in rd['error'] else str(rd['error'])
                 ExceptionEvent.add_error(
                     service, etype, edata, message=emessage, request=inst)
             except Exception:
+                emessage = rd['error']['detailMessage'] if 'detailMessage' in rd['error'] else str(rd['error'])
                 ExceptionEvent.add_error(service, 'undefined',
                                          '\n'.join(
                                              rd['error']['stackTrace']['trace']),
-                                         message=rd['error']['detailMessage'], request=inst)
+                                         message=emessage, request=inst)
         if resources:
             inst.resources.add(*resources)
             inst.save()
@@ -819,7 +820,7 @@ class ExceptionEvent(models.Model):
     received = models.DateTimeField(db_index=True, null=False)
     service = models.ForeignKey(Service, on_delete=models.CASCADE)
     error_type = models.CharField(max_length=255, null=False, db_index=True)
-    error_message = models.CharField(max_length=255, null=False, default='')
+    error_message = models.TextField(null=False, default='')
     error_data = models.TextField(null=False, default='')
     request = models.ForeignKey(RequestEvent, related_name='exceptions', on_delete=models.CASCADE)
 
@@ -827,9 +828,9 @@ class ExceptionEvent(models.Model):
     def add_error(cls, from_service, error_type, stack_trace,
                   request=None, created=None, message=None):
         received = datetime.utcnow().replace(tzinfo=pytz.utc)
-        if not isinstance(error_type, string_types):
+        if not isinstance(error_type, str):
             _cls = error_type.__class__
-            error_type = '{}.{}'.format(_cls.__module__, _cls.__name__)
+            error_type = f'{_cls.__module__}.{_cls.__name__}'
         if not message:
             message = str(error_type)
         if isinstance(stack_trace, (list, tuple)):
@@ -896,7 +897,7 @@ class MetricLabel(models.Model):
         blank=True)
 
     def __unicode__(self):
-        return 'Metric Label: {}'.format(self.name.encode('ascii', 'ignore'))
+        return f"Metric Label: {self.name.encode('ascii', 'ignore')}"
 
 
 class MetricValue(models.Model):
@@ -927,7 +928,7 @@ class MetricValue(models.Model):
     value_raw = models.TextField(null=True, default=None, blank=True)
     samples_count = models.PositiveIntegerField(
         null=False, default=0, blank=False)
-    data = JSONField(null=False, default={})
+    data = JSONField(null=False, default=dict)
 
     class Meta:
         unique_together = (
@@ -944,13 +945,11 @@ class MetricValue(models.Model):
         metric = self.service_metric.metric.name
         if self.label:
             _l = self.label.name
-            metric = '{} [{}]'.format(metric, _l)
+            metric = f'{metric} [{_l}]'
         if self.resource and self.resource.type:
-            metric = '{} for {}'.format(
-                metric, '{}={}'.format(
-                    self.resource.type, self.resource.name))
-        return 'Metric Value: {}: [{}] (since {} until {})'.format(
-            metric, self.value, self.valid_from, self.valid_to)
+            _s = f'{self.resource.type}={self.resource.name}'
+            metric = f'{metric} for {_s}'
+        return f'Metric Value: {metric}: [{self.value}] (since {self.valid_from} until {self.valid_to})'
 
     @classmethod
     def add(cls, metric, valid_from, valid_to, service, label,
@@ -984,37 +983,37 @@ class MetricValue(models.Model):
         if event_type:
             if not isinstance(event_type, EventType):
                 event_type = EventType.get(event_type)
-        # if not resource:
-        #     resource, _ = MonitoredResource.objects.get_or_create(
-        #         type=MonitoredResource.TYPE_EMPTY, name='')
         try:
-            inst = cls.objects.get(valid_from=valid_from,
-                                   valid_to=valid_to,
-                                   service=service,
-                                   label=label,
-                                   resource=resource,
-                                   event_type=event_type,
-                                   service_metric=service_metric)
-            inst.value = abs(value) if value else 0
-            inst.value_raw = abs(value_raw) if value_raw else 0
-            inst.value_num = abs(value_num) if value_num else 0
-            inst.samples_count = samples_count or 0
-            inst.save()
-            return inst
+            inst = cls.objects.filter(
+                valid_from=valid_from,
+                valid_to=valid_to,
+                service=service,
+                label=label,
+                resource=resource,
+                event_type=event_type,
+                service_metric=service_metric).last()
+            if inst:
+                inst.value = abs(value) if value else 0
+                inst.value_raw = abs(value_raw) if value_raw else 0
+                inst.value_num = abs(value_num) if value_num else 0
+                inst.samples_count = samples_count or 0
+                inst.save()
+                return inst
         except cls.DoesNotExist:
             pass
-        return cls.objects.create(valid_from=valid_from,
-                                  valid_to=valid_to,
-                                  service=service,
-                                  service_metric=service_metric,
-                                  label=label,
-                                  resource=resource,
-                                  event_type=event_type,
-                                  value=value_raw,
-                                  value_raw=value_raw,
-                                  value_num=value_num,
-                                  samples_count=samples_count or 0,
-                                  data=data or {})
+        return cls.objects.create(
+            valid_from=valid_from,
+            valid_to=valid_to,
+            service=service,
+            service_metric=service_metric,
+            label=label,
+            resource=resource,
+            event_type=event_type,
+            value=value_raw,
+            value_raw=value_raw,
+            value_num=value_num,
+            samples_count=samples_count or 0,
+            data=data or {})
 
     @classmethod
     def get_for(cls, metric, service=None, valid_on=None,
@@ -1094,7 +1093,7 @@ class NotificationCheck(models.Model):
         null=False,
         blank=False,
         help_text="Description of the alert")
-    user_threshold = JSONField(default={}, null=False, blank=False,
+    user_threshold = JSONField(default=dict, null=False, blank=False,
                                help_text=_("Expected min/max values for user configuration"))
     metrics = models.ManyToManyField(
         Metric,
@@ -1119,11 +1118,11 @@ class NotificationCheck(models.Model):
         help_text=_("Is it active"))
 
     def __str__(self):
-        return "Notification Check #{}: {}".format(self.id, self.name)
+        return f"Notification Check #{self.id}: {self.name}"
 
     @property
     def notification_subject(self):
-        return _("{}: {}").format(self.severity, self.name)
+        return _(f"{self.severity}: {self.name}")
 
     @property
     def is_warning(self):
@@ -1213,8 +1212,7 @@ class NotificationCheck(models.Model):
             pass
         else:
             raise TypeError(
-                "Unsupported threshold type: {} ({})".format(
-                    thresholds, type(thresholds)))
+                f"Unsupported threshold type: {thresholds} ({type(thresholds)})")
         return thresholds
 
     @classmethod
@@ -1288,7 +1286,7 @@ class NotificationCheck(models.Model):
                     'active': this.active,
                     'grace_period': this.grace_period}
                 kwargs['initial'] = initial
-                super(F, self).__init__(*args, **kwargs)
+                super().__init__(*args, **kwargs)
                 fields = self.fields
                 for d in defs:
                     # def.get_fields() can return several fields,
@@ -1379,7 +1377,7 @@ class NotificationReceiver(models.Model):
     def save(self, *args, **kwargs):
         if not (self.user or self.email):
             raise ValueError("Cannot save empty notification receiver")
-        super(NotificationReceiver, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
 
 class NotificationMetricDefinition(models.Model):
@@ -1455,9 +1453,7 @@ class NotificationMetricDefinition(models.Model):
                 val_ = val
             return {
                 'class':
-                    '{}.{}'.format(
-                        val.__class__.__module__,
-                        val.__class__.__name__),
+                    f'{val.__class__.__module__}.{val.__class__.__name__}',
                     'value': val_}
         except MetricNotificationCheck.DoesNotExist:
             return
@@ -1486,7 +1482,7 @@ class NotificationMetricDefinition(models.Model):
 
     @property
     def field_name(self):
-        return '{}.{}'.format(self.metric.name, self.field_option)
+        return f'{self.metric.name}.{self.field_option}'
 
     def populate_min_max(self):
         notification = self.notification_check
@@ -1502,7 +1498,7 @@ class NotificationMetricDefinition(models.Model):
                                                 .filter(
                                                     notification_check=self.notification_check,
                                                     metric=self.metric,
-                                                    **{'{}__isnull'.format(self.field_option): False})\
+                                                    **{f'{self.field_option}__isnull': False})\
                                                 .get()
                 if mcheck:
                     self.metric_check = mcheck
@@ -1552,16 +1548,14 @@ class MetricNotificationCheck(models.Model):
     def __str__(self):
         indicator = []
         if self.min_value is not None:
-            indicator.append("value above {}".format(self.min_value))
+            indicator.append(f"value above {self.min_value}")
         if self.max_value is not None:
-            indicator.append("value below {}".format(self.max_value))
+            indicator.append(f"value below {self.max_value}")
         if self.max_timeout is not None:
             indicator.append(
-                "value must be collected within {}".format(
-                    self.max_timeout))
+                f"value must be collected within {self.max_timeout}")
         indicator = ' and '.join(indicator)
-        return "MetricCheck({}@{}: {})".format(
-            self.metric.name, self.service.name if self.service else '', indicator)
+        return f"MetricCheck({self.metric.name}@{(self.service.name if self.service else '')}: {indicator})"
 
     @property
     def field_option(self):
@@ -1596,10 +1590,7 @@ class MetricNotificationCheck(models.Model):
             self.valid_to = metric.valid_to if hasattr(metric, 'valid_to') else None
 
         def __str__(self):
-            return "MetricValueError({}: metric {} misses {} check: {})".format(self.severity,
-                                                                                self.metric,
-                                                                                self.check,
-                                                                                self.message)
+            return f"MetricValueError({self.severity}: metric {self.metric} misses {self.check} check: {self.message})"
 
     def check_value(self, metric, valid_on):
         """
@@ -1608,7 +1599,7 @@ class MetricNotificationCheck(models.Model):
         v = metric.value_num
         m = metric.service_metric.metric
         metric_name = m.description or m.name
-        unit_name = ' {}'.format(m.unit) if not m.is_count else ''
+        unit_name = f' {m.unit}' if not m.is_count else ''
         had_check = False
 
         if self.definition:
@@ -1617,30 +1608,23 @@ class MetricNotificationCheck(models.Model):
             if self.event_type:
                 os = self.event_type
                 if os.is_all or os.is_other:
-                    msg_prefix.append("for {} OWS".format(os.name))
+                    msg_prefix.append(f"for {os.name} OWS")
                 else:
-                    msg_prefix.append("for {} OWS".format(os.name))
+                    msg_prefix.append(f"for {os.name} OWS")
             if self.service:
-                msg_prefix.append("for {} service".format(self.service.name))
+                msg_prefix.append(f"for {self.service.name} service")
             if self.resource:
                 msg_prefix.append(
-                    "for {}[{}] resource".format(
-                        self.resource.name,
-                        self.resource.type))
+                    f"for {self.resource.name}[{self.resource.type}] resource")
 
             msg_prefix = ' '.join(msg_prefix)
-            description_tmpl = ("{} {} should be {{}} "
-                                "{{:0.0f}}{}, got {{:0.0f}}{} instead").format(msg_prefix,
-                                                                               metric_name,
-                                                                               unit_name,
-                                                                               unit_name)\
-                .strip()
+            description_tmpl = (f"{msg_prefix} {metric_name} should be {{}} "
+                                f"{{:0.0f}}{unit_name}, got {{:0.0f}}{unit_name} instead").strip()
 
             if v is not None and self.min_value is not None:
                 had_check = True
                 if float(v) < float(self.min_value):
-                    msg = "{} {} {}".format(
-                        def_msg, int(self.min_value), unit_name)
+                    msg = f"{def_msg} {int(self.min_value)} {unit_name}"
                     description = description_tmpl.format(
                         'at least', float(self.min_value), float(v))
                     raise self.MetricValueError(
@@ -1648,8 +1632,7 @@ class MetricNotificationCheck(models.Model):
             if v is not None and self.max_value is not None:
                 had_check = True
                 if float(v) > float(self.max_value):
-                    msg = "{} {} {}".format(
-                        def_msg, int(self.max_value), unit_name)
+                    msg = f"{def_msg} {int(self.max_value)} {unit_name}"
                     description = description_tmpl.format(
                         'at most', float(self.max_value), float(v))
                     raise self.MetricValueError(
@@ -1665,11 +1648,11 @@ class MetricNotificationCheck(models.Model):
                 if (valid_on - metric.valid_to) > self.max_timeout:
                     total_seconds = self.max_timeout.total_seconds()
                     actual_seconds = (valid_on - metric.valid_to).total_seconds()
-                    msg = "{} {} seconds".format(def_msg, int(total_seconds))
-                    description = description_tmpl.format('recored at most ',
-                                                          '{} seconds ago'.format(
-                                                              total_seconds),
-                                                          '{} seconds'.format(actual_seconds))
+                    msg = f"{def_msg} {int(total_seconds)} seconds"
+                    description = description_tmpl.format(
+                        'recored at most ',
+                        f'{total_seconds} seconds ago',
+                        f'{actual_seconds} seconds')
                     raise self.MetricValueError(metric,
                                                 self,
                                                 msg,
@@ -1683,7 +1666,7 @@ class MetricNotificationCheck(models.Model):
                 "",
                 None,
                 None,
-                "Metric check {} is not checking anything".format(self))
+                f"Metric check {self} is not checking anything")
 
     def check_metric(self, for_timestamp=None):
         """
@@ -1710,13 +1693,13 @@ class MetricNotificationCheck(models.Model):
                 "",
                 None,
                 None,
-                "Cannot find metric values for {} on {}".format(self.metric, for_timestamp))
+                f"Cannot find metric values for {self.metric} on {for_timestamp}")
         for m in metrics:
             self.check_value(m, for_timestamp)
         return True
 
 
-class BuiltIns(object):
+class BuiltIns:
     service_types = (ServiceType.TYPE_GEONODE, ServiceType.TYPE_GEOSERVER,)
     host_service_types = (ServiceType.TYPE_HOST_GN, ServiceType.TYPE_HOST_GS,)
 
@@ -1770,7 +1753,6 @@ class BuiltIns(object):
                     'request.ua': 'User Agent of source of request',
                     'request.path': 'Request URL',
                     'network.in.rate': 'Network incoming traffic rate',
-                    'network.out.rate': 'Network outgoing traffic rate',
                     'network.out.rate': 'Network outgoing traffic rate',
                     'network.out': 'Network outgoing traffic bytes',
                     'network.in': 'Network incoming traffic bytes',
@@ -1849,14 +1831,13 @@ def do_autoconfigure():
         _host_by_name = '127.0.0.1'
     hosts = [(wsite.hostname, _host_by_name,)]
     # default geonode
-    geonode_name = settings.MONITORING_SERVICE_NAME or '{}-geonode'.format(
-        wsite.hostname)
+    geonode_name = settings.MONITORING_SERVICE_NAME or f'{wsite.hostname}-geonode'
     geonodes = [(geonode_name, settings.SITEURL, hosts[0])]
 
     geoservers = []
     for k, val in settings.OGC_SERVER.items():
         if val.get('BACKEND') == 'geonode.geoserver':
-            gname = '{}-geoserver'.format(k)
+            gname = f'{k}-geoserver'
             gsite = urlparse(val['LOCATION'])
             try:
                 _host_by_name = gethostbyname(gsite.hostname)
@@ -1900,7 +1881,7 @@ def do_autoconfigure():
                 service_type=geonode_type)
         service.save()
 
-        shost_name = '{}-hostgeonode'.format(host.name)
+        shost_name = f'{host.name}-hostgeonode'
         try:
             service = Service.objects.get(name=shost_name)
         except Service.DoesNotExist:
@@ -1928,7 +1909,7 @@ def do_autoconfigure():
                 service_type=geoserver_type)
         service.save()
 
-        shost_name = '{}-hostgeoserver'.format(host.name)
+        shost_name = f'{host.name}-hostgeoserver'
         try:
             service = Service.objects.get(name=shost_name)
         except Service.DoesNotExist:

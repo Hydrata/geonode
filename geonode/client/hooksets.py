@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2018 OSGeo
@@ -19,37 +18,50 @@
 #########################################################################
 import json
 
-from six import string_types
+from django.conf import settings
+from django.urls.base import reverse
 
 
-class BaseHookSet(object):
+class BaseHookSet:
 
     # Layers
-    def layer_detail_template(self, context=None):
+    def dataset_list_template(self, context=None):
+        return 'datasets/dataset_list_default.html'
+
+    def dataset_detail_template(self, context=None):
         return NotImplemented
 
-    def layer_new_template(self, context=None):
+    def dataset_new_template(self, context=None):
         return NotImplemented
 
-    def layer_view_template(self, context=None):
+    def dataset_view_template(self, context=None):
         return NotImplemented
 
-    def layer_edit_template(self, context=None):
+    def dataset_edit_template(self, context=None):
         return NotImplemented
 
-    def layer_update_template(self, context=None):
+    def dataset_update_template(self, context=None):
         return NotImplemented
 
-    def layer_embed_template(self, context=None):
+    def dataset_embed_template(self, context=None):
         return NotImplemented
 
-    def layer_download_template(self, context=None):
+    def dataset_download_template(self, context=None):
         return NotImplemented
 
-    def layer_style_edit_template(self, context=None):
+    def dataset_style_edit_template(self, context=None):
         return NotImplemented
+
+    def dataset_list_url(self):
+        return self.add_limit_settings(reverse('dataset_browse'))
+
+    def dataset_detail_url(self, layer):
+        return reverse('dataset_detail', args=(layer.alternate,))
 
     # Maps
+    def map_list_template(self, context=None):
+        return 'maps/map_list_default.html'
+
     def map_detail_template(self, context=None):
         return NotImplemented
 
@@ -71,12 +83,53 @@ class BaseHookSet(object):
     def map_download_template(self, context=None):
         return NotImplemented
 
+    def map_list_url(self):
+        return self.add_limit_settings(reverse('maps_browse'))
+
+    def map_detail_url(self, map):
+        return reverse('map_detail', args=(map.id,))
+
+    # GeoApps
+    def geoapp_list_template(self, context=None):
+        return 'apps/app_list_default.html'
+
+    def geoapp_detail_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_new_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_view_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_edit_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_update_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_embed_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_download_template(self, context=None):
+        return NotImplemented
+
+    def geoapp_list_url(self):
+        return self.add_limit_settings(reverse('apps_browse'))
+
+    def geoapp_detail_url(self, geoapp):
+        return reverse('geoapp_detail', args=(geoapp.id,))
+
+    # Documents
+    def document_list_url(self):
+        return self.add_limit_settings(reverse('document_browse'))
+
+    def document_detail_url(self, document):
+        return reverse('document_detail', args=(document.id,))
+
     # Map Persisting
     def viewer_json(self, conf, context=None):
-        if not context:
-            context = {}
-
-        if isinstance(conf, string_types):
+        if isinstance(conf, str):
             conf = json.loads(conf)
         return conf
 
@@ -85,102 +138,11 @@ class BaseHookSet(object):
         context['config'] = conf
         return 'maps/map_edit.html'
 
+    def add_limit_settings(self, url):
+        CLIENT_RESULTS_LIMIT = settings.CLIENT_RESULTS_LIMIT
+        return f"{url}?limit={CLIENT_RESULTS_LIMIT}"
 
-class LeafletHookSet(BaseHookSet):
-
-    # Layers
-    def layer_detail_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_new_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_view_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_edit_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_update_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_embed_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_download_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    def layer_style_edit_template(self, context=None):
-        return 'leaflet/layers/layer_leaflet_map.html'
-
-    # Maps
-    def map_detail_template(self, context=None):
-        return 'leaflet/maps/map_view.html'
-
-    def map_new_template(self, context=None):
-        return 'leaflet/maps/map_view.html'
-
-    def map_view_template(self, context=None):
-        return 'leaflet/maps/map_view.html'
-
-    def map_edit_template(self, context=None):
-        return 'leaflet/maps/map_edit.html'
-
-    def map_update_template(self, context=None):
-        return 'leaflet/maps/map_edit.html'
-
-    def map_embed_template(self, context=None):
-        return 'leaflet/maps/map_detail.html'
-
-    def map_download_template(self, context=None):
-        return 'leaflet/maps/map_embed.html'
-
-
-class ReactHookSet(BaseHookSet):
-
-    # Layers
-    def layer_detail_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_new_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_view_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_edit_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_update_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_embed_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_download_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    def layer_style_edit_template(self, context=None):
-        return 'geonode-client/layer_map.html'
-
-    # Maps
-    def map_detail_template(self, context=None):
-        return 'geonode-client/map_detail.html'
-
-    def map_new_template(self, context=None):
-        return 'geonode-client/map_new.html'
-
-    def map_view_template(self, context=None):
-        return 'geonode-client/map_view.html'
-
-    def map_edit_template(self, context=None):
-        return 'geonode-client/edit_map.html'
-
-    def map_update_template(self, context=None):
-        return 'geonode-client/edit_map.html'
-
-    def map_embed_template(self, context=None):
-        return 'geonode-client/map_view.html'
-
-    def map_download_template(self, context=None):
-        return 'geonode-client/map_view.html'
+    def metadata_update_redirect(self, url):
+        if "metadata_uri" in url:
+            return url.replace('/metadata_uri', '')
+        return url.replace('/metadata', '')

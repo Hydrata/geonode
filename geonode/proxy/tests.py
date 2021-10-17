@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #########################################################################
 #
 # Copyright (C) 2016 OSGeo
@@ -24,12 +23,20 @@ unittest). These will both pass when you run "manage.py test".
 
 Replace these with more appropriate tests for your application.
 """
+from urllib.parse import urljoin
+
+from django.conf import settings
+from geonode.proxy.templatetags.proxy_lib_tags import original_link_available
+from django.test.client import RequestFactory
+from unittest.mock import patch
+from geonode.upload.models import Upload
 import json
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 try:
     from unittest.mock import MagicMock
 except ImportError:
-    from mock import MagicMock
+    from unittest.mock import MagicMock
 
 from django.urls import reverse
 from django.contrib.auth import get_user_model
@@ -37,19 +44,19 @@ from django.test.utils import override_settings
 
 from geonode import geoserver
 from geonode.base.models import Link
-from geonode.layers.models import Layer
+from geonode.layers.models import Dataset
 from geonode.decorators import on_ogc_backend
 from geonode.tests.base import GeoNodeBaseTestSupport
-from geonode.base.populate_test_data import create_models
+from geonode.base.populate_test_data import create_models, create_single_dataset
 
 TEST_DOMAIN = '.github.com'
-TEST_URL = 'https://help%s/' % TEST_DOMAIN
+TEST_URL = f'https://help{TEST_DOMAIN}/'
 
 
 class ProxyTest(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(ProxyTest, self).setUp()
+        super().setUp()
         self.admin = get_user_model().objects.get(username='admin')
 
         # FIXME(Ariel): These tests do not work when the computer is offline.
@@ -59,8 +66,7 @@ class ProxyTest(GeoNodeBaseTestSupport):
     @override_settings(DEBUG=True, PROXY_ALLOWED_HOSTS=())
     def test_validate_host_disabled_in_debug(self):
         """If PROXY_ALLOWED_HOSTS is empty and DEBUG is True, all hosts pass the proxy."""
-        response = self.client.get('%s?url=%s' %
-                                   (self.proxy_url, self.url))
+        response = self.client.get(f'{self.proxy_url}?url={self.url}')
         # 404 - NOT FOUND
         if response.status_code != 404:
             self.assertTrue(response.status_code in (200, 301))
@@ -68,8 +74,7 @@ class ProxyTest(GeoNodeBaseTestSupport):
     @override_settings(DEBUG=False, PROXY_ALLOWED_HOSTS=())
     def test_validate_host_disabled_not_in_debug(self):
         """If PROXY_ALLOWED_HOSTS is empty and DEBUG is False requests should return 403."""
-        response = self.client.get('%s?url=%s' %
-                                   (self.proxy_url, self.url))
+        response = self.client.get(f'{self.proxy_url}?url={self.url}')
         # 404 - NOT FOUND
         if response.status_code != 404:
             self.assertEqual(response.status_code, 403)
@@ -78,8 +83,7 @@ class ProxyTest(GeoNodeBaseTestSupport):
     @override_settings(DEBUG=False, PROXY_ALLOWED_HOSTS=(TEST_DOMAIN,))
     def test_proxy_allowed_host(self):
         """If PROXY_ALLOWED_HOSTS is empty and DEBUG is False requests should return 403."""
-        response = self.client.get('%s?url=%s' %
-                                   (self.proxy_url, self.url))
+        response = self.client.get(f'{self.proxy_url}?url={self.url}')
         # 404 - NOT FOUND
         if response.status_code != 404:
             self.assertTrue(response.status_code in (200, 301))
@@ -98,7 +102,7 @@ class ProxyTest(GeoNodeBaseTestSupport):
             method=INDEXED,
             base_url='http://bogus.pocus.com/ows')
         response = self.client.get(
-            '%s?url=%s' % (self.proxy_url, 'http://bogus.pocus.com/ows/wms?request=GetCapabilities'))
+            f'{self.proxy_url}?url=http://bogus.pocus.com/ows/wms?request=GetCapabilities')
         # 200 - FOUND
         self.assertTrue(response.status_code in (200, 301))
 
@@ -108,7 +112,7 @@ class ProxyTest(GeoNodeBaseTestSupport):
         an absolute path before calling the remote URL."""
         import geonode.proxy.views
 
-        class Response(object):
+        class Response:
             status_code = 200
             content = 'Hello World'
             headers = {'Content-Type': 'text/html'}
@@ -119,22 +123,22 @@ class ProxyTest(GeoNodeBaseTestSupport):
         geonode.proxy.views.http_client.request = request_mock
         url = "http://example.org/test/test/../../index.html"
 
-        self.client.get('%s?url=%s' % (self.proxy_url, url))
+        self.client.get(f'{self.proxy_url}?url={url}')
         assert request_mock.call_args[0][0] == 'http://example.org/index.html'
 
 
 class DownloadResourceTestCase(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(DownloadResourceTestCase, self).setUp()
-        create_models(type='layer')
+        super().setUp()
+        create_models(type='dataset')
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
-    def test_download_url(self):
-        layer = Layer.objects.all().first()
+    def test_download_url_with_not_existing_file(self):
+        dataset = Dataset.objects.all().first()
         self.client.login(username='admin', password='admin')
         # ... all should be good
-        response = self.client.get(reverse('download', args=(layer.id,)))
+        response = self.client.get(reverse('download', args=(dataset.id,)))
         # Espected 404 since there are no files available for this layer
         self.assertEqual(response.status_code, 404)
         content = response.content
@@ -144,12 +148,46 @@ class DownloadResourceTestCase(GeoNodeBaseTestSupport):
         self.assertTrue(
             "No files have been found for this resource. Please, contact a system administrator." in data)
 
+    @patch('geonode.storage.manager.storage_manager.exists')
+    @patch('geonode.storage.manager.storage_manager.open')
+    @on_ogc_backend(geoserver.BACKEND_PACKAGE)
+    def test_download_url_with_existing_files(self, fopen, fexists):
+        fexists.return_value = True
+        fopen.return_value = SimpleUploadedFile('foo_file.shp', b'scc')
+        dataset = Dataset.objects.all().first()
+
+        dataset.files = [
+            "/tmpe1exb9e9/foo_file.dbf",
+            "/tmpe1exb9e9/foo_file.prj",
+            "/tmpe1exb9e9/foo_file.shp",
+            "/tmpe1exb9e9/foo_file.shx"
+        ]
+
+        dataset.save()
+
+        dataset.refresh_from_db()
+
+        upload = Upload.objects.create(
+            state='RUNNING',
+            resource=dataset
+        )
+
+        assert upload
+
+        self.client.login(username='admin', password='admin')
+        # ... all should be good
+        response = self.client.get(reverse('download', args=(dataset.id,)))
+        # Espected 404 since there are no files available for this layer
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual('application/zip', response.headers.get('Content-Type'))
+        self.assertEqual('attachment; filename="CA.zip"', response.headers.get('Content-Disposition'))
+
 
 class OWSApiTestCase(GeoNodeBaseTestSupport):
 
     def setUp(self):
-        super(OWSApiTestCase, self).setUp()
-        create_models(type='layer')
+        super().setUp()
+        create_models(type='dataset')
         # prepare some WMS endpoints
         q = Link.objects.all()
         for lyr in q[:3]:
@@ -166,3 +204,51 @@ class OWSApiTestCase(GeoNodeBaseTestSupport):
             content = content.decode('UTF-8')
         data = json.loads(content)
         self.assertTrue(len(data['data']), q.count())
+
+
+@override_settings(SITEURL='http://localhost:8000')
+class TestProxyTags(GeoNodeBaseTestSupport):
+    def setUp(self):
+        self.resource = create_single_dataset('foo_dataset')
+        r = RequestFactory()
+        self.url = urljoin(settings.SITEURL, reverse("download", args={self.resource.id}))
+        r.get(self.url)
+        admin = get_user_model().objects.get(username='admin')
+        r.user = admin
+        self.context = {'request': r}
+
+    def test_tag_original_link_available_with_different_netlock_should_return_true(self):
+        actual = original_link_available(self.context, self.resource.resourcebase_ptr_id, "http://url.com/")
+        self.assertTrue(actual)
+
+    def test_should_return_false_if_no_files_are_available(self):
+        _ = Upload.objects.create(
+            state='RUNNING',
+            resource=self.resource
+        )
+
+        actual = original_link_available(self.context, self.resource.resourcebase_ptr_id, self.url)
+        self.assertFalse(actual)
+
+    @patch('geonode.storage.manager.storage_manager.exists', return_value=True)
+    def test_should_return_true_if_files_are_available(self, fexists):
+        upload = Upload.objects.create(
+            state='RUNNING',
+            resource=self.resource
+        )
+
+        assert upload
+
+        self.resource.files = [
+            "/tmpe1exb9e9/foo_file.dbf",
+            "/tmpe1exb9e9/foo_file.prj",
+            "/tmpe1exb9e9/foo_file.shp",
+            "/tmpe1exb9e9/foo_file.shx"
+        ]
+
+        self.resource.save()
+
+        self.resource.refresh_from_db()
+
+        actual = original_link_available(self.context, self.resource.resourcebase_ptr_id, self.url)
+        self.assertTrue(actual)
