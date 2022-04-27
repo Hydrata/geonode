@@ -27,7 +27,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.http import Http404, HttpResponse, HttpResponseNotAllowed, HttpResponseRedirect, HttpResponseServerError
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.urls import reverse
 from django.views.decorators.clickjacking import xframe_options_exempt
 
@@ -609,3 +609,15 @@ def map_metadata_detail(request, mapid, template="maps/map_metadata_detail.html"
 @login_required
 def map_batch_metadata(request):
     return batch_modify(request, 'Map')
+
+
+@login_required
+def edit_redirect(request, mapid):
+    response = redirect(f'/catalogue/#/map/{mapid}')
+    return response
+
+
+@login_required
+def view_redirect(request, mapid):
+    response = redirect(f'/catalogue/#/map/{mapid}')
+    return response
