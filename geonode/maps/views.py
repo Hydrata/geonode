@@ -611,13 +611,11 @@ def map_batch_metadata(request):
     return batch_modify(request, 'Map')
 
 
-@login_required
 def edit_redirect(request, mapid):
     response = redirect(f'/catalogue/#/map/{mapid}')
     return response
 
 
-@login_required
 def view_redirect(request, mapid):
     response = redirect(f'/catalogue/#/map/{mapid}')
     return response
