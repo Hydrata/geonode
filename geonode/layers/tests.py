@@ -1006,7 +1006,8 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         updated_dataset = Dataset.objects.get(alternate=f"geonode:{layer.name}")
         # just checking some values if are updated
         self.assertGreaterEqual(updated_dataset.styles.all().count(), 1)
-        self.assertIsNotNone(updated_dataset.styles.first().sld_title)
+        self.assertIsNotNone(updated_dataset.styles.first())
+        self.assertEqual(layer.styles.first().sld_title, updated_dataset.styles.first().sld_title)
 
     def test_xml_should_raise_an_error_if_the_uuid_is_changed(self):
         '''
@@ -1046,7 +1047,13 @@ class DatasetsTest(GeoNodeBaseTestSupport):
     def test_will_raise_exception_for_replace_dataset_with_unknown_format(self):
         layer = Dataset.objects.get(name="single_point")
         filename = "/tpm/filename.ccc"
-        files = ["/opt/file1.shp", "/opt/file2.ccc"]
+        file_path = gisdata.VECTOR_DATA
+        files = {
+            "shp": filename,
+            "dbf": f"{file_path}/san_andres_y_providencia_highway.asd",
+            "prj": f"{file_path}/san_andres_y_providencia_highway.asd",
+            "shx": f"{file_path}/san_andres_y_providencia_highway.asd",
+        }
         with self.assertRaises(Exception) as e:
             validate_input_source(layer, filename, files, action_type="append")
         expected = "You are attempting to append a vector dataset with an unknown format."
@@ -1073,14 +1080,15 @@ class DatasetsTest(GeoNodeBaseTestSupport):
     @patch("geonode.layers.utils.gs_catalog")
     def test_will_raise_exception_for_not_existing_dataset_in_the_catalog(self, catalog):
         catalog.get_layer.return_value = None
-        layer = Dataset.objects.get(name="single_point")
+        create_single_dataset("san_andres_y_providencia_water")
+        layer = Dataset.objects.get(name="san_andres_y_providencia_water")
         file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "single_point.shp")
+        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
         files = {
             "shp": filename,
-            "dbf": f"{file_path}/single_point.sbf",
-            "prj": f"{file_path}/single_point.prj",
-            "shx": f"{file_path}/single_point.shx",
+            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
+            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
+            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
         }
         with self.assertRaises(Exception) as e:
             validate_input_source(layer, filename, files, action_type="append")
@@ -1096,14 +1104,15 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         attr.attributes = []
         self.r.resource = attr
         catalog.get_layer.return_value = self.r
-        layer = Dataset.objects.filter(name="single_point")[0]
+        create_single_dataset("san_andres_y_providencia_water")
+        layer = Dataset.objects.filter(name="san_andres_y_providencia_water")[0]
         file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "single_point.shp")
+        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
         files = {
             "shp": filename,
-            "dbf": f"{file_path}/single_point.sbf",
-            "prj": f"{file_path}/single_point.prj",
-            "shx": f"{file_path}/single_point.shx",
+            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
+            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
+            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
         }
         with self.assertRaises(Exception) as e:
             validate_input_source(layer, filename, files, action_type="append")
@@ -1116,17 +1125,18 @@ class DatasetsTest(GeoNodeBaseTestSupport):
     @patch("geonode.layers.utils.gs_catalog")
     def test_validation_will_pass_for_valid_append(self, catalog):
         attr = namedtuple('GSCatalogAttr', ['attributes'])
-        attr.attributes = ['label']
+        attr.attributes = ['NATURAL', 'NAME']
         self.r.resource = attr
         catalog.get_layer.return_value = self.r
-        layer = Dataset.objects.filter(name="single_point")[0]
+        create_single_dataset("san_andres_y_providencia_water")
+        layer = Dataset.objects.filter(name="san_andres_y_providencia_water")[0]
         file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "single_point.shp")
+        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
         files = {
             "shp": filename,
-            "dbf": f"{file_path}/single_point.sbf",
-            "prj": f"{file_path}/single_point.prj",
-            "shx": f"{file_path}/single_point.shx",
+            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
+            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
+            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
         }
         actual = validate_input_source(layer, filename, files, action_type="append")
         self.assertTrue(actual)
@@ -1565,19 +1575,8 @@ class LayerNotificationsTestCase(NotificationsTestsHelper):
             self.assertTrue(self.check_notification_out('dataset_updated', self.u))
 
             self.clear_notifications_queue()
-            from dialogos.models import Comment
             lct = ContentType.objects.get_for_model(_l)
-            comment = Comment(
-                author=self.norman,
-                name=self.u.username,
-                content_type=lct,
-                object_id=_l.id,
-                content_object=_l,
-                comment='test comment')
-            comment.save()
-            self.assertTrue(self.check_notification_out('dataset_comment', self.u))
 
-            self.clear_notifications_queue()
             if "pinax.ratings" in settings.INSTALLED_APPS:
                 self.clear_notifications_queue()
                 from pinax.ratings.models import Rating

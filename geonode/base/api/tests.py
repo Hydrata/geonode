@@ -59,10 +59,10 @@ from geonode.base.models import (
 from geonode.layers.models import Dataset
 from geonode.favorite.models import Favorite
 from geonode.documents.models import Document
+from geonode.geoapps.models import GeoApp
 from geonode.utils import build_absolute_uri
 from geonode.resource.api.tasks import ExecutionRequest
 from geonode.base.populate_test_data import create_models, create_single_dataset
-from geonode.security.utils import get_resources_with_perms
 from geonode.resource.api.tasks import resouce_service_dispatcher
 
 logger = logging.getLogger(__name__)
@@ -243,20 +243,15 @@ class BaseApiTests(APITestCase):
         url = reverse('users-list')
         # Anonymous
         response = self.client.get(url, format='json')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 5)
-        logger.debug(response.data)
-        self.assertEqual(response.data['total'], 10)
-        self.assertEqual(len(response.data['users']), 10)
-
-        # Auhtorized
+        self.assertEqual(response.status_code, 403)
+        # Authorized
         self.assertTrue(self.client.login(username='admin', password='admin'))
         response = self.client.get(url, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 5)
         logger.debug(response.data)
-        self.assertEqual(response.data['total'], 10)
-        self.assertEqual(len(response.data['users']), 10)
+        self.assertEqual(response.data['total'], 9)
+        self.assertEqual(len(response.data['users']), 9)
         # response has link to the response
         self.assertTrue('link' in response.data['users'][0].keys())
 
@@ -268,46 +263,47 @@ class BaseApiTests(APITestCase):
         self.assertIsNotNone(response.data['user']['avatar'])
 
         # anonymous users are not in contributors group
-        url = reverse('users-detail', kwargs={'pk': -1})
-        response = self.client.get(url, format='json')
-        self.assertNotIn('add_resource', response.data['user']['perms'])
+        self.assertNotIn('add_resource', get_user_model().objects.get(id=-1).perms)
 
-        # Bobby
-        self.assertTrue(self.client.login(username='bobby', password='bob'))
-        # Bobby can access other users' details
-        response = self.client.get(url, format='json')
-        self.assertEqual(response.status_code, 200)
+        try:
+            # Bobby
+            group_user = get_user_model().objects.create(username='group_user')
+            bobby = get_user_model().objects.filter(username='bobby').get()
+            groupx = GroupProfile.objects.create(slug="groupx", title="groupx", access="private")
+            groupx.join(bobby)
+            groupx.join(group_user)
+            self.assertTrue(self.client.login(username='bobby', password='bob'))
+            url = reverse('users-detail', kwargs={'pk': group_user.id})
+            # Bobby can access other users details from same group
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
 
-        # Bobby can see himself in the list
-        url = reverse('users-list')
-        self.assertEqual(len(response.data), 1)
-        response = self.client.get(url, format='json')
-        self.assertEqual(response.status_code, 200)
-        logger.debug(response.data)
-        self.assertEqual(response.data['total'], 10)
-        self.assertEqual(len(response.data['users']), 10)
+            # Bobby can see himself in the list
+            url = reverse('users-list')
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('"username": "bobby"', json.dumps(response.data['users']))
 
-        # Bobby can access its own details
-        bobby = get_user_model().objects.filter(username='bobby').get()
-        url = reverse('users-detail', kwargs={'pk': bobby.id})
-        response = self.client.get(url, format='json')
-        self.assertEqual(response.status_code, 200)
-        logger.debug(response.data)
-        self.assertEqual(response.data['user']['username'], 'bobby')
-        self.assertIsNotNone(response.data['user']['avatar'])
-        # default contributor group_perm is returned in perms
-        self.assertIn('add_resource', response.data['user']['perms'])
+            # Bobby can access its own details
+            url = reverse('users-detail', kwargs={'pk': bobby.id})
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['user']['username'], 'bobby')
+            self.assertIsNotNone(response.data['user']['avatar'])
+            # default contributor group_perm is returned in perms
+            self.assertIn('add_resource', response.data['user']['perms'])
 
-        # Bobby can't access other users perms list
-        norman = get_user_model().objects.filter(username='norman').get()
-        url = reverse('users-detail', kwargs={'pk': norman.id})
-        response = self.client.get(url, format='json')
-        self.assertEqual(response.status_code, 200)
-        logger.debug(response.data)
-        self.assertEqual(response.data['user']['username'], 'norman')
-        self.assertIsNotNone(response.data['user']['avatar'])
-        # default contributor group_perm is returned in perms
-        self.assertNotIn('perms', response.data['user'])
+            # Bobby can't access other users perms list
+            url = reverse('users-detail', kwargs={'pk': group_user.id})
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['user']['username'], 'group_user')
+            self.assertIsNotNone(response.data['user']['avatar'])
+            # default contributor group_perm is returned in perms
+            self.assertNotIn('perms', response.data['user'])
+        finally:
+            group_user.delete()
+            groupx.delete()
 
     def test_register_users(self):
         """
@@ -375,9 +371,9 @@ class BaseApiTests(APITestCase):
                 email="user_test_delete@geonode.org",
                 password='user')
             url = reverse('users-detail', kwargs={'pk': user.pk})
-            # Anonymous can read
+            # Anonymous can't read
             response = self.client.get(url, format='json')
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.status_code, 403)
             # Anonymous can't delete user
             response = self.client.delete(url, format='json')
             self.assertEqual(response.status_code, 403)
@@ -617,6 +613,35 @@ class BaseApiTests(APITestCase):
             resource.tkeywords.set(ThesaurusKeyword.objects.none())
             self.assertEqual(0, resource.tkeywords.count())
 
+    def test_write_resources(self):
+        """
+        Ensure we can perform write oprtation afainst the Resource Bases.
+        """
+        url = reverse('base-resources-list')
+        # Check user permissions
+        for resource_type in ['dataset', 'document', 'map']:
+            resource = ResourceBase.objects.filter(owner__username='bobby', resource_type=resource_type).first()
+            self.assertEqual(resource.owner.username, 'bobby')
+            self.assertTrue(self.client.login(username='bobby', password='bob'))
+            response = self.client.get(f"{url}/{resource.id}/", format='json')
+            self.assertTrue('change_resourcebase' in list(response.data['resource']['perms']))
+            self.assertEqual(True, response.data['resource']['is_published'], response.data['resource']['is_published'])
+            data = {
+                "title": "Foo Title",
+                "abstract": "Foo Abstract",
+                "attribution": "Foo Attribution",
+                "doi": "321-12345-987654321",
+                "is_published": False  # this is a read-only field so should not updated
+            }
+            response = self.client.patch(f"{url}/{resource.id}/", data=data, format='json')
+            self.assertEqual(response.status_code, 200, response.status_code)
+            response = self.client.get(f"{url}/{resource.id}/", format='json')
+            self.assertEqual('Foo Title', response.data['resource']['title'], response.data['resource']['title'])
+            self.assertEqual('Foo Abstract', response.data['resource']['abstract'], response.data['resource']['abstract'])
+            self.assertEqual('Foo Attribution', response.data['resource']['attribution'], response.data['resource']['attribution'])
+            self.assertEqual('321-12345-987654321', response.data['resource']['doi'], response.data['resource']['doi'])
+            self.assertEqual(True, response.data['resource']['is_published'], response.data['resource']['is_published'])
+
     def test_delete_user_with_resource(self):
         owner, created = get_user_model().objects.get_or_create(username='delet-owner')
         Dataset(
@@ -852,6 +877,7 @@ class BaseApiTests(APITestCase):
 
         # Add perms to Norman
         resource_perm_spec_patch = {
+            "uuid": resource.uuid,
             'users': [
                 {
                     'id': norman.id,
@@ -865,8 +891,7 @@ class BaseApiTests(APITestCase):
                 }
             ]
         }
-        data = f"uuid={resource.uuid}&permissions={json.dumps(resource_perm_spec_patch)}"
-        response = self.client.patch(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+        response = self.client.patch(set_perms_url, data=resource_perm_spec_patch, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(response.data.get('status'))
         self.assertIsNotNone(response.data.get('status_url'))
@@ -948,6 +973,7 @@ class BaseApiTests(APITestCase):
 
         # Remove perms to Norman
         resource_perm_spec = {
+            "uuid": resource.uuid,
             'users': [
                 {
                     'id': bobby.id,
@@ -986,8 +1012,8 @@ class BaseApiTests(APITestCase):
                 }
             ]
         }
-        data = f"uuid={resource.uuid}&permissions={json.dumps(resource_perm_spec)}"
-        response = self.client.put(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+
+        response = self.client.put(set_perms_url, data=resource_perm_spec, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(response.data.get('status'))
         self.assertIsNotNone(response.data.get('status_url'))
@@ -1064,8 +1090,8 @@ class BaseApiTests(APITestCase):
         response = self.client.get(get_perms_url, format='json')
         self.assertEqual(response.status_code, 403)
         # set perms
-        data = f"uuid={resource.uuid}&permissions={json.dumps(resource_perm_spec)}"
-        response = self.client.put(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+        resource_perm_spec['uuid'] = resource.uuid
+        response = self.client.put(set_perms_url, data=resource_perm_spec, format="json")
         self.assertEqual(response.status_code, 403)
         # login resourse owner
         # get perms
@@ -1073,8 +1099,7 @@ class BaseApiTests(APITestCase):
         response = self.client.get(get_perms_url, format='json')
         self.assertEqual(response.status_code, 200)
         # set perms
-        data = f"uuid={resource.uuid}&permissions={json.dumps(resource_perm_spec)}"
-        response = self.client.put(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+        response = self.client.put(set_perms_url, data=resource_perm_spec, format="json")
         self.assertEqual(response.status_code, 200)
 
     def test_featured_and_published_resources(self):
@@ -1444,11 +1469,60 @@ class BaseApiTests(APITestCase):
         # clean up
         favorite.delete()
 
+    def test_get_favorites_is_returned_in_the_base_endpoint_per_user(self):
+        """
+        Ensure we get user's favorite resources.
+        """
+        dataset = Dataset.objects.order_by('-last_updated').first()
+        url = reverse('base-resources-list')
+        bobby = get_user_model().objects.get(username='bobby')
+
+        self.client.login(username='bobby', password='bob')
+
+        favorite = Favorite.objects.create_favorite(dataset, bobby)
+
+        response = self.client.get(url, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resource_have_tag = [r.get('favorite', False) for r in response.json().get("resources", {})]
+
+        # check that there is at last 1 favorite for the user
+        self.assertTrue(any(resource_have_tag))
+        # clean up
+        favorite.delete()
+
+        self.client.login(username='admin', password='admin')
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, 200)
+        resource_have_tag = [r.get('favorite', False) for r in response.json().get("resources", {})]
+        # the admin should not have any favorite assigned to him
+        self.assertFalse(all(resource_have_tag))
+
+    def test_get_favorites_is_returned_in_the_base_endpoint(self):
+        """
+        Ensure we get user's favorite resources.
+        """
+        url = reverse('base-resources-list')
+
+        self.assertTrue(self.client.login(username='bobby', password='bob'))
+        response = self.client.get(url, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        resource_have_tag = ['favorite' in r.keys() for r in response.json().get("resources", {})]
+        self.assertTrue(all(resource_have_tag))
+
     def test_create_and_delete_favorites(self):
         """
         Ensure we can add and remove resources to user's favorite.
         """
-        dataset = get_resources_with_perms(get_user_model().objects.get(pk=-1)).first()
+        bobby = get_user_model().objects.get(username='bobby')
+        dataset = create_single_dataset(name="test_dataset_for_fav", owner=bobby)
+        dataset.set_permissions(
+            {'users': {
+                    "bobby": ['base.add_resourcebase']
+                }
+            }
+        )
         url = urljoin(f"{reverse('base-resources-list')}/", f"{dataset.pk}/favorite/")
         # Anonymous
         response = self.client.post(url, format='json')
@@ -1470,6 +1544,7 @@ class BaseApiTests(APITestCase):
         response = self.client.delete(url, format="json")
         self.assertEqual(response.data["message"], "Resource not in favorites")
         self.assertEqual(response.status_code, 404)
+        dataset.delete()
 
     def test_search_resources_with_favorite_true_and_no_favorite_should_return_0(self):
         """
@@ -1506,6 +1581,28 @@ class BaseApiTests(APITestCase):
         # 1 favorite is saved, so the total should be 1
         self.assertEqual(response.data['total'], 1)
         self.assertEqual(len(response.data['resources']), 1)
+
+    def test_search_resources_with_favorite_true_with_geoapps_icluded(self):
+        url = reverse('base-resources-list')
+        # Admin
+        admin = get_user_model().objects.get(username='admin')
+        try:
+            geo_app = GeoApp.objects.create(
+                title="Test GeoApp Favorite",
+                owner=admin,
+                resource_type="geostory"
+            )
+            Favorite.objects.create_favorite(geo_app, admin)
+
+            self.assertTrue(self.client.login(username='admin', password='admin'))
+
+            response = self.client.get(
+                f"{url}?favorite=true", format='json')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['total'], 1)
+            self.assertEqual(len(response.data['resources']), 1)
+        finally:
+            geo_app.delete()
 
     def test_thumbnail_urls(self):
         """
@@ -1641,6 +1738,31 @@ class BaseApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['total'], 8)
 
+    def test_regions_with_resources(self):
+        """
+        Ensure we can access the list of regions.
+        """
+        self.assertTrue(self.client.login(username='admin', password='admin'))
+        url = reverse('regions-list')
+        response = self.client.get(f"{url}?with_resources=True", format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total'], 0)
+
+        self.assertTrue(self.client.login(username='admin', password='admin'))
+        url = reverse('regions-list')
+        response = self.client.get(f"{url}?with_resources=False", format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total'], Region.objects.count())
+
+        self.assertTrue(self.client.login(username='admin', password='admin'))
+        url = reverse('regions-list')
+        response = self.client.get(f"{url}", format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total'], Region.objects.count())
+
     def test_keywords_list(self):
         """
         Ensure we can access the list of keywords.
@@ -1774,6 +1896,13 @@ class BaseApiTests(APITestCase):
     def test_rating_resource(self):
         resource = Dataset.objects.first()
         url = reverse('base-resources-ratings', args=[resource.pk])
+        resource.set_permissions(
+            {'users': {
+                    get_anonymous_user().username: ['base.view_resourcebase'],
+                    "bobby": ['base.add_resourcebase']
+                }
+            }
+        )
         data = {
             "rating": 3
         }
@@ -1811,7 +1940,7 @@ class BaseApiTests(APITestCase):
         self.assertEqual(response.json()['overall_rating'], 2.0)
         self.assertEqual(response.status_code, 200)
 
-    def test_set_resource_thumbanil(self):
+    def test_set_resource_thumbnail(self):
         re_uuid = "[0-F]{8}-([0-F]{4}-){3}[0-F]{12}"
         resource = Dataset.objects.first()
         url = reverse('base-resources-set_thumbnail', args=[resource.pk])
@@ -1831,7 +1960,12 @@ class BaseApiTests(APITestCase):
         data = {"file": "invali url"}
         response = self.client.put(url, data=data, format="json")
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json(), ['file is either a file upload, ASCII byte string or a valid image url string'])
+        expected = {
+            'success': False,
+            'errors': ['file is either a file upload, ASCII byte string or a valid image url string'],
+            'code': 'invalid'
+        }
+        self.assertEqual(response.json(), expected)
         # Test with non image url
         data = {"file": "http://localhost:8000/thumb.txt"}
         response = self.client.put(url, data=data, format="json")
@@ -1866,7 +2000,9 @@ class BaseApiTests(APITestCase):
         url = reverse('base-resources-set-thumb-from-bbox', args=[dataset_id])
         # Anonymous
         expected = {
-            "detail": "Authentication credentials were not provided."
+            "success": False,
+            "errors": ["Authentication credentials were not provided."],
+            "code": "not_authenticated",
         }
         response = self.client.post(url, format='json')
         self.assertEqual(response.status_code, 403)
@@ -1984,6 +2120,7 @@ class BaseApiTests(APITestCase):
 
         # Add perms to Bobby
         resource_perm_spec_patch = {
+            'uuid': resource.uuid,
             'users': [
                 {
                     'id': bobby.id,
@@ -1998,9 +2135,8 @@ class BaseApiTests(APITestCase):
 
         # Patch the resource perms
         self.assertTrue(self.client.login(username='admin', password='admin'))
-        data = f"uuid={resource.uuid}&permissions={json.dumps(resource_perm_spec_patch)}"
         set_perms_url = urljoin(f"{reverse('base-resources-detail', kwargs={'pk': resource.pk})}/", 'permissions')
-        response = self.client.patch(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+        response = self.client.patch(set_perms_url, data=resource_perm_spec_patch, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(response.data.get('status'))
         self.assertIsNotNone(response.data.get('status_url'))
@@ -2188,6 +2324,7 @@ class BaseApiTests(APITestCase):
         # set perms to enable user clone resource
         self.assertTrue(self.client.login(username="admin", password="admin"))
         perm_spec = {
+            "uuid": resource.uuid,
             'users': [
                 {
                     'id': bobby.id,
@@ -2200,8 +2337,8 @@ class BaseApiTests(APITestCase):
             ]
         }
         set_perms_url = urljoin(f"{reverse('base-resources-detail', kwargs={'pk': resource.pk})}/", 'permissions')
-        data = f"uuid={resource.uuid}&permissions={json.dumps(perm_spec)}"
-        response = self.client.patch(set_perms_url, data=data, content_type='application/x-www-form-urlencoded')
+
+        response = self.client.patch(set_perms_url, data=perm_spec, format="json")
         self.assertEqual(response.status_code, 200)
         # clone resource
         self.assertTrue(self.client.login(username="admin", password="admin"))
@@ -2334,3 +2471,18 @@ class TestExtraMetadataBaseApi(GeoNodeBaseTestSupport):
         response = self.client.delete(url, data=[self.mdata.id], content_type='application/json')
         self.assertTrue(200, response.status_code)
         self.assertEqual([], response.json())
+
+    def test_user_without_view_perms_cannot_see_the_endpoint(self):
+        from geonode.resource.manager import resource_manager
+
+        self.client.login(username='bobby', password='bob')
+        resource_manager.remove_permissions(self.layer.uuid, instance=self.layer.get_self_resource())
+        url = reverse('base-resources-extra-metadata', args=[self.layer.id])
+        response = self.client.get(url, content_type='application/json')
+        self.assertTrue(403, response.status_code)
+
+        perm_spec = {"users": {"bobby": ['view_resourcebase']}, "groups": {}}
+        self.layer.set_permissions(perm_spec)
+        url = reverse('base-resources-extra-metadata', args=[self.layer.id])
+        response = self.client.get(url, content_type='application/json')
+        self.assertTrue(200, response.status_code)

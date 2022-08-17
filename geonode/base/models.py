@@ -70,6 +70,7 @@ from geonode.utils import (
     bbox_to_wkt,
     find_by_attr,
     bbox_to_projection,
+    get_allowed_extensions,
     is_monochromatic_image)
 from geonode.thumbs.utils import (
     MISSING_THUMB,
@@ -91,7 +92,7 @@ from geonode.people.enumerations import ROLE_VALUES
 
 from urllib.parse import urlsplit, urljoin
 from geonode.storage.manager import storage_manager
-from geonode.upload.files import ALLOWED_EXTENSIONS
+
 
 logger = logging.getLogger(__name__)
 
@@ -479,9 +480,12 @@ class _HierarchicalTagManager(_TaggableManager):
             _new_keyword = str_tags - set(t.name for t in existing)
             for new_tag in list(_new_keyword):
                 new_tag = escape(new_tag)
-                new_tag_obj = HierarchicalKeyword.add_root(name=new_tag)
-                tag_objs.add(new_tag_obj)
-                new_ids.add(new_tag_obj.id)
+                try:
+                    new_tag_obj = HierarchicalKeyword.add_root(name=new_tag)
+                    tag_objs.add(new_tag_obj)
+                    new_ids.add(new_tag_obj.id)
+                except Exception as e:
+                    logger.exception(e)
 
         signals.m2m_changed.send(
             sender=self.through,
@@ -1454,7 +1458,7 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
     def is_copyable(self):
         from geonode.geoserver.helpers import select_relevant_files
         if self.resource_type == 'dataset':
-            allowed_file = select_relevant_files(ALLOWED_EXTENSIONS, self.files)
+            allowed_file = select_relevant_files(get_allowed_extensions(), self.files)
             return len(allowed_file) != 0
         return True
 

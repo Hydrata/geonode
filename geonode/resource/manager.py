@@ -39,6 +39,7 @@ from django.db.models.query import QuerySet
 from django.contrib.auth.models import Group
 from django.templatetags.static import static
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import (
     ObjectDoesNotExist,
@@ -207,8 +208,8 @@ class ResourceManagerInterface(metaclass=ABCMeta):
 
 class ResourceManager(ResourceManagerInterface):
 
-    def __init__(self):
-        self._concrete_resource_manager = self._get_concrete_manager()
+    def __init__(self, concrete_manager=None):
+        self._concrete_resource_manager = concrete_manager or self._get_concrete_manager()
 
     def _get_concrete_manager(self):
         module_name, class_name = rm_settings.RESOURCE_MANAGER_CONCRETE_CLASS.rsplit(".", 1)
@@ -325,7 +326,8 @@ class ResourceManager(ResourceManagerInterface):
         return _resource
 
     def update(self, uuid: str, /, instance: ResourceBase = None, xml_file: str = None, metadata_uploaded: bool = False,
-               vals: dict = {}, regions: list = [], keywords: list = [], custom: dict = {}, notify: bool = True, extra_metadata: list = []) -> ResourceBase:
+               vals: dict = {}, regions: list = [], keywords: list = [], custom: dict = {}, notify: bool = True, extra_metadata: list = [],
+               *args, **kwargs) -> ResourceBase:
         _resource = instance or ResourceManager._get_instance(uuid)
         if _resource:
             _resource.set_processing_state(enumerations.STATE_RUNNING)
@@ -352,6 +354,10 @@ class ResourceManager(ResourceManagerInterface):
                                 uuid = _uuid
 
                     logger.debug(f'Update Dataset with information coming from XML File if available {_resource}')
+
+                    if not kwargs.get("store_spatial_files", True) and vals.get('files', []):
+                        vals.update({"files": []})
+
                     _resource.save()
                     _resource = update_resource(
                         instance=_resource.get_real_instance(),
@@ -383,6 +389,15 @@ class ResourceManager(ResourceManagerInterface):
                         approval_status_changed=(vals is not None and any([x in vals for x in ['is_approved', 'is_published']])),
                         group_status_changed=(vals is not None and 'group' in vals)
                     )
+                    if kwargs.get('sld_file', False) and kwargs.get('sld_uploaded', False):
+                        self._concrete_resource_manager.set_style(
+                            method="",
+                            uuid=_resource.uuid,
+                            resource=_resource,
+                            sld_file=kwargs.get('sld_file', False),
+                            sld_uploaded=kwargs.get('sld_uploaded', False)
+                        )
+                        _resource.set_permissions()
                     if _resource.state != enumerations.STATE_INVALID:
                         _resource.set_processing_state(enumerations.STATE_PROCESSED)
                 except Exception as e:
@@ -484,7 +499,9 @@ class ResourceManager(ResourceManagerInterface):
                         to_update = storage_manager.copy(_resource).copy()
                     except Exception as e:
                         logger.exception(e)
+
                     _resource = self._concrete_resource_manager.copy(instance, uuid=_resource.uuid, defaults=to_update)
+
             except Exception as e:
                 logger.exception(e)
                 _resource = None
@@ -513,26 +530,26 @@ class ResourceManager(ResourceManagerInterface):
                     _resource.set_processing_state(enumerations.STATE_PROCESSED)
         return _resource
 
-    def append(self, instance: ResourceBase, vals: dict = {}):
+    def append(self, instance: ResourceBase, vals: dict = {}, *args, **kwargs):
         if self._validate_resource(instance.get_real_instance(), 'append'):
             self._concrete_resource_manager.append(instance.get_real_instance(), vals=vals)
             to_update = vals.copy()
             if instance:
                 if 'user' in to_update:
                     to_update.pop('user')
-                return self.update(instance.uuid, instance.get_real_instance(), vals=to_update)
+                return self.update(instance.uuid, instance.get_real_instance(), vals=to_update, *args, **kwargs)
         return instance
 
-    def replace(self, instance: ResourceBase, vals: dict = {}):
+    def replace(self, instance: ResourceBase, vals: dict = {}, *args, **kwargs):
         if self._validate_resource(instance.get_real_instance(), 'replace'):
-            if vals.get('files', None):
+            if vals.get('files', None) and kwargs.get('store_spatial_files', True):
                 vals.update(storage_manager.replace(instance.get_real_instance(), vals.get('files')))
-            self._concrete_resource_manager.replace(instance.get_real_instance(), vals=vals)
+            self._concrete_resource_manager.replace(instance.get_real_instance(), vals=vals, *args, **kwargs)
             to_update = vals.copy()
             if instance:
                 if 'user' in to_update:
                     to_update.pop('user')
-                return self.update(instance.uuid, instance.get_real_instance(), vals=to_update)
+                return self.update(instance.uuid, instance.get_real_instance(), vals=to_update, *args, **kwargs)
         return instance
 
     def _validate_resource(self, instance: ResourceBase, action_type: str) -> bool:
@@ -654,6 +671,12 @@ class ResourceManager(ResourceManagerInterface):
                     """
                     self.remove_permissions(uuid, instance=_resource)
 
+                    def _safe_assign_perm(perm, user_or_group, obj=None):
+                        try:
+                            assign_perm(perm, user_or_group, obj)
+                        except Permission.DoesNotExist as e:
+                            logger.warn(e)
+
                     if permissions is not None and len(permissions):
                         """
                         Sets an object's the permission levels based on the perm_spec JSON.
@@ -687,9 +710,9 @@ class ResourceManager(ResourceManagerInterface):
                                     if perm == 'change_dataset_style' and _resource_subtype not in DATA_STYLABLE_RESOURCES_SUBTYPES:
                                         pass
                                     else:
-                                        assign_perm(perm, anonymous_group, _resource.dataset)
+                                        _safe_assign_perm(perm, anonymous_group, _resource.dataset)
                                 elif AdvancedSecurityWorkflowManager.assignable_perm_condition(perm, _resource_type):
-                                    assign_perm(perm, anonymous_group, _resource.get_self_resource())
+                                    _safe_assign_perm(perm, anonymous_group, _resource.get_self_resource())
 
                         # All the other users
                         if 'users' in _perm_spec and len(_perm_spec['users']) > 0:
@@ -703,9 +726,9 @@ class ResourceManager(ResourceManagerInterface):
                                             if perm == 'change_dataset_style' and _resource_subtype not in DATA_STYLABLE_RESOURCES_SUBTYPES:
                                                 pass
                                             else:
-                                                assign_perm(perm, _user, _resource.dataset)
+                                                _safe_assign_perm(perm, _user, _resource.dataset)
                                         elif AdvancedSecurityWorkflowManager.assignable_perm_condition(perm, _resource_type):
-                                            assign_perm(perm, _user, _resource.get_self_resource())
+                                            _safe_assign_perm(perm, _user, _resource.get_self_resource())
 
                         # All the other groups
                         if 'groups' in _perm_spec and len(_perm_spec['groups']) > 0:
@@ -718,9 +741,9 @@ class ResourceManager(ResourceManagerInterface):
                                         if perm == 'change_dataset_style' and _resource_subtype not in DATA_STYLABLE_RESOURCES_SUBTYPES:
                                             pass
                                         else:
-                                            assign_perm(perm, _group, _resource.dataset)
+                                            _safe_assign_perm(perm, _group, _resource.dataset)
                                     elif AdvancedSecurityWorkflowManager.assignable_perm_condition(perm, _resource_type):
-                                        assign_perm(perm, _group, _resource.get_self_resource())
+                                        _safe_assign_perm(perm, _group, _resource.get_self_resource())
 
                         # AnonymousUser
                         if 'users' in _perm_spec and len(_perm_spec['users']) > 0:
@@ -735,38 +758,38 @@ class ResourceManager(ResourceManagerInterface):
                                         if perm == 'change_dataset_style' and _resource_subtype not in DATA_STYLABLE_RESOURCES_SUBTYPES:
                                             pass
                                         else:
-                                            assign_perm(perm, _user, _resource.dataset)
+                                            _safe_assign_perm(perm, _user, _resource.dataset)
                                     elif AdvancedSecurityWorkflowManager.assignable_perm_condition(perm, _resource_type):
-                                        assign_perm(perm, _user, _resource.get_self_resource())
+                                        _safe_assign_perm(perm, _user, _resource.get_self_resource())
                     else:
                         # Anonymous
                         if AdvancedSecurityWorkflowManager.is_anonymous_can_view():
-                            assign_perm('view_resourcebase', anonymous_group, _resource.get_self_resource())
+                            _safe_assign_perm('view_resourcebase', anonymous_group, _resource.get_self_resource())
                             _prev_perm = _perm_spec["groups"].get(anonymous_group, []) if "groups" in _perm_spec else []
                             _perm_spec["groups"][anonymous_group] = set.union(perms_as_set(_prev_perm), perms_as_set('view_resourcebase'))
                         else:
                             for user_group in get_user_groups(_owner):
                                 if not skip_registered_members_common_group(user_group):
-                                    assign_perm('view_resourcebase', user_group, _resource.get_self_resource())
+                                    _safe_assign_perm('view_resourcebase', user_group, _resource.get_self_resource())
                                     _prev_perm = _perm_spec["groups"].get(user_group, []) if "groups" in _perm_spec else []
                                     _perm_spec["groups"][user_group] = set.union(perms_as_set(_prev_perm), perms_as_set('view_resourcebase'))
 
                         if AdvancedSecurityWorkflowManager.assignable_perm_condition('download_resourcebase', _resource_type):
                             if AdvancedSecurityWorkflowManager.is_anonymous_can_download():
-                                assign_perm('download_resourcebase', anonymous_group, _resource.get_self_resource())
+                                _safe_assign_perm('download_resourcebase', anonymous_group, _resource.get_self_resource())
                                 _prev_perm = _perm_spec["groups"].get(anonymous_group, []) if "groups" in _perm_spec else []
                                 _perm_spec["groups"][anonymous_group] = set.union(perms_as_set(_prev_perm), perms_as_set('download_resourcebase'))
                             else:
                                 for user_group in get_user_groups(_owner):
                                     if not skip_registered_members_common_group(user_group):
-                                        assign_perm('download_resourcebase', user_group, _resource.get_self_resource())
+                                        _safe_assign_perm('download_resourcebase', user_group, _resource.get_self_resource())
                                         _prev_perm = _perm_spec["groups"].get(user_group, []) if "groups" in _perm_spec else []
                                         _perm_spec["groups"][user_group] = set.union(perms_as_set(_prev_perm), perms_as_set('download_resourcebase'))
 
                         if _resource_type == 'dataset':
                             # only for layer owner
-                            assign_perm('change_dataset_data', _owner, _resource)
-                            assign_perm('change_dataset_style', _owner, _resource)
+                            _safe_assign_perm('change_dataset_data', _owner, _resource)
+                            _safe_assign_perm('change_dataset_style', _owner, _resource)
                             _prev_perm = _perm_spec["users"].get(_owner, []) if "users" in _perm_spec else []
                             _perm_spec["users"][_owner] = set.union(perms_as_set(_prev_perm), perms_as_set(['change_dataset_data', 'change_dataset_style']))
 

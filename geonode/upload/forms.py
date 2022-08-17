@@ -22,12 +22,9 @@ import logging
 
 from django import forms
 from django.core.exceptions import ValidationError
-from django.template.defaultfilters import filesizeformat
 from django.utils.translation import ugettext_lazy as _
-from geonode.upload.api.exceptions import FileUploadLimitException, UploadParallelismLimitException
-
-from geonode.upload.models import Upload, UploadSizeLimit, UploadParallelismLimit
-from geonode.upload.data_retriever import DataRetriever
+from geonode.storage.manager import StorageManager
+from geonode.upload.utils import UploadLimitValidator
 
 from .. import geoserver
 from ..utils import check_ogc_backend
@@ -120,16 +117,20 @@ class LayerUploadForm(forms.Form):
             # Something already went wrong
             return cleaned
 
-        self.validate_parallelism_limit_per_user()
+        upload_validator = UploadLimitValidator(user=self.user)
+        upload_validator.validate_parallelism_limit_per_user()
 
         # Validate form file sizes
-        self.validate_files_sum_of_sizes(self.files)
+        upload_validator.validate_files_sum_of_sizes(self.files)
 
         # Get remote files
-        self.data_retriever = DataRetriever(files=files, tranfer_at_creation=True)
+        file_manager = StorageManager(remote_files=files)
+        file_manager.clone_remote_files()
+        self.data_retriever = file_manager.data_retriever
         cleaned["data_retriever"] = self.data_retriever
+        cleaned["storage_manager"] = file_manager
         # Validate remote file sizes
-        self.validate_files_sum_of_sizes(self.data_retriever)
+        upload_validator.validate_files_sum_of_sizes(self.data_retriever)
 
         file_paths_without_base = self.data_retriever.get_paths()
         base_file_path = file_paths_without_base.pop("base_file")
@@ -172,54 +173,6 @@ class LayerUploadForm(forms.Form):
                 files[field_name] = file_field_value
 
         return uploaded, files
-
-    def validate_parallelism_limit_per_user(self):
-        max_parallel_uploads = self._get_max_parallel_uploads()
-        parallel_uploads_count = self._get_parallel_uploads_count()
-        if parallel_uploads_count >= max_parallel_uploads:
-            raise UploadParallelismLimitException(_(
-                f"The number of active parallel uploads exceeds {max_parallel_uploads}. Wait for the pending ones to finish."
-            ))
-
-    def validate_files_sum_of_sizes(self, file_dict):
-        max_size = self._get_uploads_max_size()
-        total_size = self._get_uploaded_files_total_size(file_dict)
-        if total_size > max_size:
-            raise FileUploadLimitException(_(
-                f'Total upload size exceeds {filesizeformat(max_size)}. Please try again with smaller files.'
-            ))
-
-    def _get_uploads_max_size(self):
-        try:
-            max_size_db_obj = UploadSizeLimit.objects.get(slug="dataset_upload_size")
-        except UploadSizeLimit.DoesNotExist:
-            max_size_db_obj = UploadSizeLimit.objects.create_default_limit()
-        return max_size_db_obj.max_size
-
-    def _get_uploaded_files(self):
-        """Return a list with all of the uploaded files"""
-        return [django_file for field_name, django_file in self.files.items()
-                if field_name != "base_file"]
-
-    def _get_uploaded_files_total_size(self, file_dict):
-        """Return a list with all of the uploaded files"""
-        excluded_files = ("zip_file", "shp_file", )
-        uploaded_files_sizes = [
-            file_obj.size for field_name, file_obj in file_dict.items()
-            if field_name not in excluded_files
-        ]
-        total_size = sum(uploaded_files_sizes)
-        return total_size
-
-    def _get_max_parallel_uploads(self):
-        try:
-            parallelism_limit = UploadParallelismLimit.objects.get(slug="default_max_parallel_uploads")
-        except UploadParallelismLimit.DoesNotExist:
-            parallelism_limit = UploadParallelismLimit.objects.create_default_limit()
-        return parallelism_limit.max_number
-
-    def _get_parallel_uploads_count(self):
-        return Upload.objects.get_incomplete_uploads(self.user).count()
 
 
 class TimeForm(forms.Form):

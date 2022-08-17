@@ -25,7 +25,6 @@ import logging
 
 from lxml import etree
 from owslib import fes
-from urllib.parse import urljoin
 from owslib.etree import etree as dlxml
 from owslib.fes import PropertyIsLike
 # ref.: https://geopython.github.io/OWSLib/_sources/index.txt
@@ -39,7 +38,7 @@ from geonode.base.models import ResourceBase
 
 logger = logging.getLogger(__name__)
 
-LOCAL_TEST_CATALOG_URL = 'http://localhost:8001/'
+LOCAL_TEST_CATALOG_URL = settings.CATALOGUE['default']['URL']
 
 
 class GeoNodeCSWTest(GeoNodeBaseTestSupport):
@@ -50,13 +49,13 @@ class GeoNodeCSWTest(GeoNodeBaseTestSupport):
         csw = get_catalogue(
             backend={
                 'ENGINE': 'geonode.catalogue.backends.pycsw_local',
-                'URL': urljoin(LOCAL_TEST_CATALOG_URL, '/catalogue/csw'),
+                'URL': LOCAL_TEST_CATALOG_URL,
             },
             skip_caps=False)
 
         self.assertEqual(
             csw.catalogue.url,
-            urljoin(LOCAL_TEST_CATALOG_URL, '/catalogue/csw')
+            LOCAL_TEST_CATALOG_URL
         )
 
         # test that OGC:CSW URLs are identical to what is defined in GeoNode
@@ -100,28 +99,28 @@ class GeoNodeCSWTest(GeoNodeBaseTestSupport):
         csw = get_catalogue(
             backend={
                 'ENGINE': 'geonode.catalogue.backends.pycsw_local',
-                'URL': urljoin(LOCAL_TEST_CATALOG_URL, '/catalogue/csw'),
+                'URL': LOCAL_TEST_CATALOG_URL,
             },
             skip_caps=False)
 
         self.assertEqual(
             csw.catalogue.url,
-            urljoin(LOCAL_TEST_CATALOG_URL, '/catalogue/csw')
+            LOCAL_TEST_CATALOG_URL
         )
 
         # get all records
         csw.catalogue.getrecords2(typenames='csw:Record')
         self.assertGreaterEqual(
             csw.catalogue.results['matches'],
-            15,
-            'Expected 15+ records')
+            12,
+            'Expected 12+ records')
 
         # get all ISO records, test for numberOfRecordsMatched
         csw.catalogue.getrecords2(typenames='gmd:MD_Metadata')
         self.assertGreaterEqual(
             csw.catalogue.results['matches'],
-            15,
-            'Expected 15+ records against ISO typename')
+            12,
+            'Expected 12+ records against ISO typename')
 
         # Make sure it currently counts both published and unpublished ones too
         try:
@@ -130,8 +129,8 @@ class GeoNodeCSWTest(GeoNodeBaseTestSupport):
             csw.catalogue.getrecords2(typenames='gmd:MD_Metadata')
             self.assertGreaterEqual(
                 csw.catalogue.results['matches'],
-                15,
-                'Expected 15+ records against ISO typename')
+                12,
+                'Expected 12+ records against ISO typename')
         finally:
             ResourceBase.objects.filter(is_published=False).update(is_published=True)
 

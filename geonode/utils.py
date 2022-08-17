@@ -17,6 +17,7 @@
 #
 #########################################################################
 
+import itertools
 import os
 import gc
 import re
@@ -44,6 +45,7 @@ from decimal import Decimal
 from threading import local
 from slugify import slugify
 from contextlib import closing
+from requests.exceptions import RetryError
 from collections import namedtuple, defaultdict
 from rest_framework.exceptions import APIException
 from math import atan, exp, log, pi, sin, tan, floor
@@ -1196,7 +1198,7 @@ class HttpClient:
                     timeout=_req_tout,
                     stream=stream,
                     verify=verify)
-            except (requests.exceptions.RequestException, ValueError) as e:
+            except (requests.exceptions.RequestException, ValueError, RetryError) as e:
                 msg = f"Request exception [{e}] - TOUT [{_req_tout}] to URL: {url} - headers: {headers}"
                 logger.exception(Exception(msg))
                 response = None
@@ -1357,10 +1359,10 @@ def get_legend_url(
     _service_url = service_url or f"{ogc_server_settings.PUBLIC_LOCATION}ows"
     _dataset_name = dataset_name or instance.alternate
     _params = f"&{params}" if params else ""
-    return(f"{_service_url}?"
-           f"service=WMS&request=GetLegendGraphic&format=image/png&WIDTH={width}&HEIGHT={height}&"
-           f"LAYER={_dataset_name}&STYLE={style_name}&version={version}&"
-           f"sld_version={sld_version}&legend_options=fontAntiAliasing:true;fontSize:12;forceLabels:on{_params}")
+    return (f"{_service_url}?"
+            f"service=WMS&request=GetLegendGraphic&format=image/png&WIDTH={width}&HEIGHT={height}&"
+            f"LAYER={_dataset_name}&STYLE={style_name}&version={version}&"
+            f"sld_version={sld_version}&legend_options=fontAntiAliasing:true;fontSize:12;forceLabels:on{_params}")
 
 
 def set_resource_default_links(instance, layer, prune=False, **kwargs):
@@ -1875,3 +1877,30 @@ def get_xpath_value(
 def get_geonode_app_types():
     from geonode.geoapps.models import GeoApp
     return list(set(GeoApp.objects.values_list('resource_type', flat=True)))
+
+
+def get_supported_datasets_file_types():
+    from django.conf import settings as gn_settings
+    '''
+    Return a list of all supported file type in geonode
+    If one of the type provided in the custom type exists in the default
+    is going to override it
+    '''
+    default_types = settings.SUPPORTED_DATASET_FILE_TYPES
+    types_module = (
+        gn_settings.ADDITIONAL_DATASET_FILE_TYPES
+        if hasattr(gn_settings, "ADDITIONAL_DATASET_FILE_TYPES")
+        else []
+    )
+    supported_types = default_types.copy()
+    default_types_id = [t.get('id') for t in default_types]
+    for _type in types_module:
+        if _type.get("id") in default_types_id:
+            supported_types[default_types_id.index(_type.get("id"))] = _type
+        else:
+            supported_types.extend([_type])
+    return supported_types
+
+
+def get_allowed_extensions():
+    return list(itertools.chain.from_iterable([_type['ext'] for _type in get_supported_datasets_file_types()]))

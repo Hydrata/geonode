@@ -38,7 +38,6 @@ from urllib.parse import urlparse, urlencode, urlsplit, urljoin
 from pinax.ratings.models import OverallRating
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
-from dialogos.models import Comment
 
 from django.conf import settings
 from django.utils import timezone
@@ -61,7 +60,6 @@ from gsimporter import Client
 from lxml import etree, objectify
 from owslib.etree import etree as dlxml
 from owslib.wcs import WebCoverageService
-from owslib.wms import WebMapService
 
 from geonode import GeoNodeException
 from geonode.base.models import Link
@@ -428,11 +426,12 @@ def set_dataset_style(saved_dataset, title, sld, base_file=None):
             name=saved_dataset.name))
         _old_styles.append(gs_catalog.get_style(
             name=f"{saved_dataset.workspace}_{saved_dataset.name}"))
-        _old_styles.append(gs_catalog.get_style(
-            name=layer.default_style.name))
-        _old_styles.append(gs_catalog.get_style(
-            name=layer.default_style.name,
-            workspace=layer.default_style.workspace))
+        if layer.default_style and layer.default_style.name:
+            _old_styles.append(gs_catalog.get_style(
+                name=layer.default_style.name))
+            _old_styles.append(gs_catalog.get_style(
+                name=layer.default_style.name,
+                workspace=layer.default_style.workspace))
         layer.default_style = style
         gs_catalog.save(layer)
         for _s in _old_styles:
@@ -781,7 +780,8 @@ def gs_slurp(
 
         except Exception as e:
             # Hide the resource until finished
-            layer.set_processing_state("FAILED")
+            if layer:
+                layer.set_processing_state("FAILED")
             if ignore_errors:
                 status = 'failed'
                 exception_type, error, traceback = sys.exc_info()
@@ -790,6 +790,15 @@ def gs_slurp(
                     msg = "Stopping process because --ignore-errors was not set and an error was found."
                     print(msg, file=sys.stderr)
                 raise Exception(f"Failed to process {resource.name}") from e
+        if layer is None:
+            if ignore_errors:
+                status = 'failed'
+                exception_type, error, traceback = sys.exc_info()
+            else:
+                if verbosity > 0:
+                    msg = "Stopping process because --ignore-errors was not set and an error was found."
+                    print(msg, file=sys.stderr)
+                raise Exception(f"Failed to process {resource.name}")
         else:
             if created:
                 if not permissions:
@@ -879,9 +888,6 @@ def gs_slurp(
                 # delete ratings, comments, and taggit tags:
                 ct = ContentType.objects.get_for_model(layer)
                 OverallRating.objects.filter(
-                    content_type=ct,
-                    object_id=layer.id).delete()
-                Comment.objects.filter(
                     content_type=ct,
                     object_id=layer.id).delete()
                 layer.keywords.clear()
@@ -1081,7 +1087,7 @@ def set_attributes_from_geoserver(layer, overwrite=False):
                 req, body = http_client.get(dft_url, user=_user)
                 soup = BeautifulSoup(body, features="lxml")
                 for field in soup.findAll('th'):
-                    if(field.string is None):
+                    if field.string is None:
                         field_name = field.contents[0].string
                     else:
                         field_name = field.string
@@ -1143,9 +1149,11 @@ def set_styles(layer, gs_catalog):
             logger.exception("No GeoServer Dataset found!")
 
     if gs_dataset:
-        default_style = gs_catalog.get_style(
-            name=gs_dataset.default_style.name,
-            workspace=gs_dataset.default_style.workspace)
+        default_style = None
+        if gs_dataset.default_style and gs_dataset.default_style.name:
+            default_style = gs_catalog.get_style(
+                name=gs_dataset.default_style.name,
+                workspace=gs_dataset.default_style.workspace)
         if default_style:
             # make sure we are not using a default SLD (which won't be editable)
             layer.default_style = save_style(default_style, layer)
@@ -1419,9 +1427,14 @@ def create_geoserver_db_featurestore(
 
     if ds_exists:
         ds.save_method = "PUT"
-
-    logger.debug('Updating target datastore % s' % dsname)
-    cat.save(ds)
+    else:
+        logger.debug('Updating target datastore % s' % dsname)
+        try:
+            cat.save(ds)
+        except FailedRequestError as e:
+            if 'already exists in workspace' not in e.args[0]:
+                raise e
+            logger.warning("The store was already present in the workspace selected")
 
     logger.debug('Reloading target datastore % s' % dsname)
     ds = get_store(cat, dsname, workspace=workspace)
@@ -1551,13 +1564,6 @@ def fetch_gs_resource(instance, values, tries):
             return (values, None)
         gs_resource = None
     return (values, gs_resource)
-
-
-def get_wms():
-    wms_url = f"{ogc_server_settings.internal_ows}?service=WMS&request=GetCapabilities&version=1.1.0"
-    req, body = http_client.get(wms_url, user=_user)
-    _wms = WebMapService(wms_url, xml=body)
-    return _wms
 
 
 def wps_execute_dataset_attribute_statistics(dataset_name, field):

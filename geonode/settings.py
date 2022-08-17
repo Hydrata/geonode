@@ -306,11 +306,6 @@ STATIC_ROOT = os.getenv('STATIC_ROOT',
 # ref: http://whitenoise.evans.io/en/stable/django.html#add-compression-and-caching-support
 CACHE_BUSTING_STATIC_ENABLED = ast.literal_eval(os.environ.get('CACHE_BUSTING_STATIC_ENABLED', 'False'))
 
-if not DEBUG and CACHE_BUSTING_STATIC_ENABLED:
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-else:
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
-
 # Optionally Use a Content-Delivery Network
 # ref: http://whitenoise.evans.io/en/stable/django.html#use-a-content-delivery-network
 STATIC_HOST = os.environ.get('STATIC_URL', '')
@@ -380,6 +375,10 @@ CACHES = {
     }
 }
 
+# Whitenoise Settings - ref.: http://whitenoise.evans.io/en/stable/django.html
+WHITENOISE_MANIFEST_STRICT = ast.literal_eval(os.getenv('WHITENOISE_MANIFEST_STRICT', 'False'))
+COMPRESS_STATIC_FILES = ast.literal_eval(os.getenv('COMPRESS_STATIC_FILES', 'False'))
+
 MEMCACHED_ENABLED = ast.literal_eval(os.getenv('MEMCACHED_ENABLED', 'False'))
 MEMCACHED_BACKEND = os.getenv('MEMCACHED_BACKEND', 'django.core.cache.backends.memcached.PyMemcacheCache')
 MEMCACHED_LOCATION = os.getenv('MEMCACHED_LOCATION', '127.0.0.1:11211')
@@ -391,6 +390,14 @@ if MEMCACHED_ENABLED:
         'BACKEND': MEMCACHED_BACKEND,
         'LOCATION': MEMCACHED_LOCATION,
     }
+
+# Define the STATICFILES_STORAGE accordingly
+if not DEBUG and CACHE_BUSTING_STATIC_ENABLED:
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+elif COMPRESS_STATIC_FILES:
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+else:
+    STATICFILES_STORAGE = 'whitenoise.storage.StaticFilesStorage'
 
 GEONODE_CORE_APPS = (
     # GeoNode internal apps
@@ -463,6 +470,7 @@ INSTALLED_APPS = (
     'django.contrib.sites',
     'django.contrib.admin',
     'django.contrib.sitemaps',
+    'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
     'django.contrib.messages',
     'django.contrib.humanize',
@@ -491,11 +499,11 @@ INSTALLED_APPS = (
     'drf_spectacular',
 
     # Theme
+    'django_select2',
     'django_forms_bootstrap',
 
     # Social
     'avatar',
-    'dialogos',
     'pinax.ratings',
     'announcements',
     'actstream',
@@ -613,7 +621,7 @@ except ValueError:
         'zip', 'aif', 'aifc', 'aiff', 'au', 'mp3', 'mpga', 'wav', 'afl', 'avi', 'avs',
         'fli', 'mp2', 'mp4', 'mpg', 'ogg', 'webm', '3gp', 'flv', 'vdo', 'glb', 'pcd', 'gltf'
     ] if os.getenv('ALLOWED_DOCUMENT_TYPES') is None \
-        else re.split(r' *[,|:|;] *', os.getenv('ALLOWED_DOCUMENT_TYPES'))
+        else re.split(r' *[,|:;] *', os.getenv('ALLOWED_DOCUMENT_TYPES'))
 
 MAX_DOCUMENT_SIZE = int(os.getenv('MAX_DOCUMENT_SIZE ', '2'))  # MB
 
@@ -763,7 +771,7 @@ MIDDLEWARE = (
     'oauth2_provider.middleware.OAuth2TokenMiddleware',
     'django_user_agents.middleware.UserAgentMiddleware',
     'geonode.base.middleware.MaintenanceMiddleware',
-    'geonode.base.middleware.ReadOnlyMiddleware',   # a Middleware enabling Read Only mode of Geonode
+    'geonode.base.middleware.ReadOnlyMiddleware'  # a Middleware enabling Read Only mode of Geonode
 )
 
 MESSAGE_STORAGE = 'django.contrib.messages.storage.cookie.CookieStorage'
@@ -780,7 +788,7 @@ if SESSION_EXPIRED_CONTROL_ENABLED:
 SESSION_COOKIE_SECURE = ast.literal_eval(os.environ.get('SESSION_COOKIE_SECURE', 'False'))
 CSRF_COOKIE_SECURE = ast.literal_eval(os.environ.get('CSRF_COOKIE_SECURE', 'False'))
 CSRF_COOKIE_HTTPONLY = ast.literal_eval(os.environ.get('CSRF_COOKIE_HTTPONLY', 'False'))
-CORS_ORIGIN_ALLOW_ALL = ast.literal_eval(os.environ.get('CORS_ORIGIN_ALLOW_ALL', 'False'))
+CORS_ALLOW_ALL_ORIGINS = ast.literal_eval(os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'False'))
 X_FRAME_OPTIONS = os.environ.get('X_FRAME_OPTIONS', 'DENY')
 SECURE_CONTENT_TYPE_NOSNIFF = ast.literal_eval(os.environ.get('SECURE_CONTENT_TYPE_NOSNIFF', 'True'))
 SECURE_BROWSER_XSS_FILTER = ast.literal_eval(os.environ.get('SECURE_BROWSER_XSS_FILTER', 'True'))
@@ -858,7 +866,6 @@ LOCKDOWN_GEONODE = ast.literal_eval(os.getenv('LOCKDOWN_GEONODE', 'False'))
 # authentication.
 # - authorized exempt urls needed for oauth when GeoNode is set to lockdown
 AUTH_EXEMPT_URLS = (
-    r'^%s/?$' % FORCE_SCRIPT_NAME,
     f'{FORCE_SCRIPT_NAME}/o/*',
     f'{FORCE_SCRIPT_NAME}/gs/*',
     f'{FORCE_SCRIPT_NAME}/account/*',
@@ -1085,13 +1092,13 @@ CATALOGUE = {
     'default': {
         # The underlying CSW implementation
         # default is pycsw in local mode (tied directly to GeoNode Django DB)
-        'ENGINE': 'geonode.catalogue.backends.pycsw_local',
+        'ENGINE': os.getenv('CATALOGUE_ENGINE', 'geonode.catalogue.backends.pycsw_local'),
         # pycsw in non-local mode
         # 'ENGINE': 'geonode.catalogue.backends.pycsw_http',
         # deegree and others
         # 'ENGINE': 'geonode.catalogue.backends.generic',
         # The FULLY QUALIFIED base url to the CSW instance for this GeoNode
-        'URL': urljoin(SITEURL, '/catalogue/csw'),
+        'URL': os.getenv('CATALOGUE_URL', urljoin(SITEURL, '/catalogue/csw')),
         # 'URL': 'http://localhost:8080/geonetwork/srv/en/csw',
         # 'URL': 'http://localhost:8080/deegree-csw-demo-3.0.4/services',
         # 'ALTERNATES_ONLY': True,
@@ -1231,7 +1238,7 @@ try:
 except ValueError:
     # fallback to regular list of values separated with misc chars
     ALLOWED_HOSTS = [HOSTNAME, 'localhost', 'django', 'geonode'] if os.getenv('ALLOWED_HOSTS') is None \
-        else re.split(r' *[,|:|;] *', os.getenv('ALLOWED_HOSTS'))
+        else re.split(r' *[,|:;] *', os.getenv('ALLOWED_HOSTS'))
 
 # AUTH_IP_WHITELIST property limits access to users/groups REST endpoints
 # to only whitelisted IP addresses.
@@ -1243,7 +1250,23 @@ except ValueError:
 #
 # AUTH_IP_WHITELIST = ['192.168.1.158', '192.168.1.159']
 AUTH_IP_WHITELIST = [HOSTNAME, 'localhost', 'django', 'geonode'] if os.getenv('AUTH_IP_WHITELIST') is None \
-    else re.split(r' *[,|:|;] *', os.getenv('AUTH_IP_WHITELIST'))
+    else re.split(r' *[,|:;] *', os.getenv('AUTH_IP_WHITELIST'))
+
+
+# ADMIN_IP_WHITELIST property limits access as admin
+# to only whitelisted IP addresses.
+#
+# Empty list means 'allow all'
+#
+# If you need to limit admin access to some specific IPs
+# fill the list like below:
+#
+# ADMIN_IP_WHITELIST = ['192.168.1.158', '192.168.1.159']
+ADMIN_IP_WHITELIST = [] if os.getenv('ADMIN_IP_WHITELIST') is None \
+    else re.split(r' *[,|:;] *', os.getenv('ADMIN_IP_WHITELIST'))
+if len(ADMIN_IP_WHITELIST) > 0:
+    AUTHENTICATION_BACKENDS = ('geonode.security.backends.AdminRestrictedAccessBackend',) + AUTHENTICATION_BACKENDS
+    MIDDLEWARE += ('geonode.security.middleware.AdminAllowedMiddleware',)
 
 # A tuple of hosts the proxy can send requests to.
 try:
@@ -1255,7 +1278,7 @@ except ValueError:
         HOSTNAME, 'localhost', 'django', 'geonode',
         'spatialreference.org', 'nominatim.openstreetmap.org', 'dev.openlayers.org'] \
         if os.getenv('PROXY_ALLOWED_HOSTS') is None \
-        else re.split(r' *[,|:|;] *', os.getenv('PROXY_ALLOWED_HOSTS'))
+        else re.split(r' *[,|:;] *', os.getenv('PROXY_ALLOWED_HOSTS'))
 
 # The proxy to use when making cross origin requests.
 PROXY_URL = os.environ.get('PROXY_URL', '/proxy/?url=')
@@ -1335,7 +1358,7 @@ except ValueError:
         'avatar.providers.GravatarAvatarProvider',
         'avatar.providers.DefaultAvatarProvider'
     ) if os.getenv('AVATAR_PROVIDERS') is None \
-        else re.split(r' *[,|:|;] *', os.getenv('AVATAR_PROVIDERS'))
+        else re.split(r' *[,|:;] *', os.getenv('AVATAR_PROVIDERS'))
 
 # Number of results per page listed in the GeoNode search pages
 CLIENT_RESULTS_LIMIT = int(os.getenv('CLIENT_RESULTS_LIMIT', '5'))
@@ -1363,9 +1386,6 @@ CREATE_LAYER = ast.literal_eval(os.getenv('CREATE_LAYER', 'False'))
 if CREATE_LAYER:
     if 'geonode.geoserver.createlayer' not in INSTALLED_APPS:
         INSTALLED_APPS += ('geonode.geoserver.createlayer',)
-
-# Settings for FAVORITE plugin
-FAVORITE_ENABLED = ast.literal_eval(os.getenv('FAVORITE_ENABLED', 'True'))
 
 # Settings for RECAPTCHA plugin
 RECAPTCHA_ENABLED = ast.literal_eval(os.environ.get('RECAPTCHA_ENABLED', 'False'))
@@ -1583,6 +1603,8 @@ if GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY == 'mapstore':
 
     # Extensions path to use in importing custom extensions into geonode
     MAPSTORE_EXTENSIONS_FOLDER_PATH = '/static/mapstore/extensions/'
+
+    # Supported Dataset file types for uploading Datasets. This setting is being from from the client
 
 # -- END Client Hooksets Setup
 
@@ -1840,6 +1862,11 @@ if NOTIFICATIONS_MODULE and NOTIFICATIONS_MODULE not in INSTALLED_APPS:
 # ########################################################################### #
 # SECURITY SETTINGS
 # ########################################################################### #
+
+ENABLE_APIKEY_LOGIN = ast.literal_eval(os.getenv('ENABLE_APIKEY_LOGIN', 'False'))
+
+if ENABLE_APIKEY_LOGIN:
+    MIDDLEWARE += ('geonode.security.middleware.LoginFromApiKeyMiddleware',)
 
 # Require users to authenticate before using Geonode
 if LOCKDOWN_GEONODE:
@@ -2140,3 +2167,62 @@ EXTRA_METADATA_SCHEMA = {**{
     "document": os.getenv('DOCUMENT_EXTRA_METADATA_SCHEMA', DEFAULT_EXTRA_METADATA_SCHEMA),
     "geoapp": os.getenv('GEOAPP_EXTRA_METADATA_SCHEMA', DEFAULT_EXTRA_METADATA_SCHEMA)
 }, **CUSTOM_METADATA_SCHEMA}
+
+
+'''
+Define the URLs patterns used by the SizeRestrictedFileUploadHandler
+to evaluate if the file is greater than the limit size defined
+'''
+
+SIZE_RESTRICTED_FILE_UPLOAD_ELEGIBLE_URL_NAMES = ("data_upload", "uploads-upload", "document_upload",)
+
+SUPPORTED_DATASET_FILE_TYPES = [
+    {
+        "id": "shp",
+        "label": "ESRI Shapefile",
+        "format": "vector",
+        "ext": ["shp"],
+        "requires": ["shp", "prj", "dbf", "shx"],
+        "optional": ["xml", "sld"]
+    },
+    {
+        "id": "tiff",
+        "label": "GeoTIFF",
+        "format": "raster",
+        "ext": ["tiff", "tif"],
+        "mimeType": ["image/tiff"],
+        "optional": ["xml", "sld"]
+    },
+    {
+        "id": "csv",
+        "label": "Comma Separated Value (CSV)",
+        "format": "vector",
+        "ext": ["csv"],
+        "mimeType": ["text/csv"],
+        "optional": ["xml", "sld"]
+    },
+    {
+        "id": "zip",
+        "label": "Zip Archive",
+        "format": "archive",
+        "ext": ["zip"],
+        "mimeType": ["application/zip"],
+        "optional": ["xml", "sld"]
+    },
+    {
+        "id": "xml",
+        "label": "XML Metadata File",
+        "format": "metadata",
+        "ext": ["xml"],
+        "mimeType": ["application/json"],
+        "needsFiles": ["shp", "prj", "dbf", "shx", "csv", "tiff", "zip", "sld"]
+    },
+    {
+        "id": "sld",
+        "label": "Styled Layer Descriptor (SLD)",
+        "format": "metadata",
+        "ext": ["sld"],
+        "mimeType": ["application/json"],
+        "needsFiles": ["shp", "prj", "dbf", "shx", "csv", "tiff", "zip", "xml"]
+    }
+]
