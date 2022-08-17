@@ -566,7 +566,7 @@ class ResourceBaseViewSet(DynamicModelViewSet):
         _user_can_manage = request.user.has_perm('change_resourcebase', resource.get_self_resource()) or request.user.has_perm('change_resourcebase_permissions', resource.get_self_resource())
         if config.read_only or config.maintenance or request.user.is_anonymous or not request.user.is_authenticated or \
                 resource is None or not _user_can_manage:
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
+            return Response(status=status.HTTP_204_NO_CONTENT)
         try:
             perms_spec = PermSpec(resource.get_all_level_info(), resource)
             request_body = request.body
