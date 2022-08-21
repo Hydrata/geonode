@@ -131,5 +131,7 @@ def get_available_users(user):
         rm_group = Group.objects.get(name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME)
         users_ids = list(rm_group.user_set.values_list('id', flat=True))
         member_ids.extend(users_ids)
+    if user.id not in member_ids:
+        member_ids.append(user.id)
 
     return get_user_model().objects.filter(id__in=member_ids)
