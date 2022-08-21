@@ -77,7 +77,7 @@ def user_info(request):
                 'status': 'error',
                 'errors': {'auth': ['No token provided.']}
             }
-            return json_response(out, status=401)
+            return json_response(out, status=403)
     else:
         access_token = headers["Authorization"].replace('Bearer ', '')
 

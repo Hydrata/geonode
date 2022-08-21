@@ -501,7 +501,7 @@ class ResourceBaseViewSet(DynamicModelViewSet):
         url_name="perms-spec",
         methods=['get', 'put', 'patch', 'delete'],
         permission_classes=[
-            IsAuthenticatedOrReadOnly
+            IsAuthenticated
         ])
     def resource_service_permissions(self, request, pk):
         """Instructs the Async dispatcher to execute a 'DELETE' or 'UPDATE' on the permissions of a valid 'uuid'
@@ -563,7 +563,7 @@ class ResourceBaseViewSet(DynamicModelViewSet):
         _user_can_manage = request.user.has_perm('change_resourcebase_permissions', resource.get_self_resource())
         if config.read_only or config.maintenance or request.user.is_anonymous or not request.user.is_authenticated or \
                 resource is None or not _user_can_manage:
-            return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             perms_spec = PermSpec(resource.get_all_level_info(), resource)
             request_params = request.data
