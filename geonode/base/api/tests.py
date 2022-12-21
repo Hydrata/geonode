@@ -305,6 +305,41 @@ class BaseApiTests(APITestCase):
             group_user.delete()
             groupx.delete()
 
+    def test_get_self_user_details_outside_registered_member(self):
+        try:
+            user = get_user_model().objects.create_user(
+                username='non_registered_member',
+                email="non_registered_member@geonode.org",
+                password='password')
+            # remove user from registered members group
+            reg_mem_group = Group.objects.get(name='registered-members')
+            reg_mem_group.user_set.remove(user)
+
+            url = reverse('users-detail', kwargs={'pk': user.pk})
+
+            self.assertTrue(self.client.login(username="non_registered_member", password="password"))
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
+        finally:
+            user.delete()
+
+    def test_get_self_user_details_with_no_group(self):
+        try:
+            user = get_user_model().objects.create_user(
+                username='no_group_member',
+                email="no_group_member@geonode.org",
+                password='password')
+            # remove user from all groups
+            user.groups.clear()
+
+            url = reverse('users-detail', kwargs={'pk': user.pk})
+
+            self.assertTrue(self.client.login(username="no_group_member", password="password"))
+            response = self.client.get(url, format='json')
+            self.assertEqual(response.status_code, 200)
+        finally:
+            user.delete()
+
     def test_register_users(self):
         """
         Ensure users are created with default groups.
@@ -1519,8 +1554,8 @@ class BaseApiTests(APITestCase):
         dataset = create_single_dataset(name="test_dataset_for_fav", owner=bobby)
         dataset.set_permissions(
             {'users': {
-                    "bobby": ['base.add_resourcebase']
-                }
+                "bobby": ['base.add_resourcebase']
+            }
             }
         )
         url = urljoin(f"{reverse('base-resources-list')}/", f"{dataset.pk}/favorite/")
@@ -1898,9 +1933,9 @@ class BaseApiTests(APITestCase):
         url = reverse('base-resources-ratings', args=[resource.pk])
         resource.set_permissions(
             {'users': {
-                    get_anonymous_user().username: ['base.view_resourcebase'],
-                    "bobby": ['base.add_resourcebase']
-                }
+                get_anonymous_user().username: ['base.view_resourcebase'],
+                "bobby": ['base.add_resourcebase']
+            }
             }
         )
         data = {
@@ -2359,6 +2394,81 @@ class BaseApiTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()['message'], 'Resource can not be cloned.')
         # clean
+        resource.delete()
+
+    def test_resource_service_copy_with_perms_dataset(self):
+        files = os.path.join(gisdata.GOOD_DATA, "vector/san_andres_y_providencia_water.shp")
+        files_as_dict, _ = get_files(files)
+        resource = Dataset.objects.create(
+            owner=get_user_model().objects.get(username='admin'),
+            name='test_copy',
+            store='geonode_data',
+            subtype="vector",
+            alternate="geonode:test_copy",
+            resource_type="dataset",
+            uuid=str(uuid4()),
+            files=list(files_as_dict.values())
+        )
+        self._assertCloningWithPerms(resource)
+
+    def test_resource_service_copy_with_perms_doc(self):
+        files = os.path.join(gisdata.GOOD_DATA, "vector/san_andres_y_providencia_water.shp")
+        files_as_dict, _ = get_files(files)
+        resource = Document.objects.create(
+            owner=get_user_model().objects.get(username='admin'),
+            subtype="vector",
+            alternate="geonode:test_copy",
+            resource_type="document",
+            uuid=str(uuid4()),
+            files=list(files_as_dict.values())
+        )
+
+        self._assertCloningWithPerms(resource)
+
+    def test_resource_service_copy_with_perms_map(self):
+        files = os.path.join(gisdata.GOOD_DATA, "vector/san_andres_y_providencia_water.shp")
+        files_as_dict, _ = get_files(files)
+        resource = Document.objects.create(
+            owner=get_user_model().objects.get(username='admin'),
+            alternate="geonode:test_copy",
+            resource_type="map",
+            uuid=str(uuid4()),
+            files=list(files_as_dict.values())
+        )
+
+        self._assertCloningWithPerms(resource)
+
+    def _assertCloningWithPerms(self, resource):
+        # login as bobby
+        self.assertTrue(self.client.login(username="bobby", password="bob"))
+
+        # bobby cannot copy the resource since he doesnt have all the perms needed
+        _perms = {
+            'users': {
+                "bobby": ['base.add_resourcebase']
+            },
+            "groups": {
+                "anonymous": []
+            }
+        }
+        resource.set_permissions(_perms)
+        copy_url = reverse('base-resources-resource-service-copy', kwargs={'pk': resource.pk})
+        response = self.client.put(copy_url, data={'title': 'cloned_resource'})
+        self.assertEqual(response.status_code, 403)
+        # set perms to enable user clone resource
+        # bobby can copy the resource since he has all the perms needed
+        _perms = {
+            'users': {
+                "bobby": ['base.add_resourcebase', 'base.download_resourcebase']
+            },
+            "groups": {
+                "anonymous": ["base.view_resourcebase", "base.download_resourcebae"]
+            }
+        }
+        resource.set_permissions(_perms)
+        copy_url = reverse('base-resources-resource-service-copy', kwargs={'pk': resource.pk})
+        response = self.client.put(copy_url, data={'title': 'cloned_resource'})
+        self.assertEqual(response.status_code, 200)
         resource.delete()
 
     def test_base_resources_return_download_link_if_document(self):

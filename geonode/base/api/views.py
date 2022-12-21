@@ -1076,7 +1076,19 @@ class ResourceBaseViewSet(DynamicModelViewSet):
         url_name="resource-service-copy",
         methods=["put"],
         permission_classes=[
-            IsAuthenticated, UserHasPerms
+            IsAuthenticated, UserHasPerms(
+                perms_dict={
+                    "dataset": {
+                        "PUT": ['base.add_resourcebase', 'base.download_resourcebase'], "rule": all
+                    },
+                    "document": {
+                        "PUT": ['base.add_resourcebase', 'base.download_resourcebase'], "rule": all
+                    },
+                    "default": {
+                        "PUT": ['base.add_resourcebase']
+                    }
+                }
+            )
         ])
     def resource_service_copy(self, request, pk):
         """Instructs the Async dispatcher to execute a 'COPY' operation over a valid 'pk'
