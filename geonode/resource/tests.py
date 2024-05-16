@@ -23,13 +23,12 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist
-from django.contrib.contenttypes.models import ContentType
 
 from geonode.groups.models import GroupProfile
 from geonode.base.populate_test_data import create_models
 from geonode.tests.base import GeoNodeBaseTestSupport
 from geonode.resource.manager import ResourceManager
-from geonode.base.models import ResourceBase
+from geonode.base.models import LinkedResource, ResourceBase
 from geonode.layers.models import Dataset
 from geonode.services.models import Service
 from geonode.documents.models import Document
@@ -38,7 +37,6 @@ from geonode.resource import settings as rm_settings
 from geonode.layers.populate_datasets_data import create_dataset_data
 from geonode.base.populate_test_data import create_single_doc, create_single_map, create_single_dataset
 
-from pinax.ratings.models import OverallRating
 from gisdata import GOOD_DATA
 
 
@@ -93,9 +91,6 @@ class TestResourceManager(GeoNodeBaseTestSupport):
         # Add dataset to a map
         MapLayer.objects.create(map=map, name=dt.alternate).save()
         # Create the rating for dataset
-        OverallRating.objects.create(
-            category=2, object_id=dt.id, content_type=ContentType.objects.get(model="dataset"), rating=3
-        )
         create_dataset_data(dt.resourcebase_ptr_id)
         res = self.rm.delete(doc.uuid, instance=doc)
         self.assertTrue(res)
@@ -103,7 +98,6 @@ class TestResourceManager(GeoNodeBaseTestSupport):
         self.assertTrue(res)
         # After dataset delete
         self.assertEqual(MapLayer.objects.filter(name="geonode:test_delete_dataset").count(), 0)
-        self.assertEqual(OverallRating.objects.filter(object_id=dt.id).count(), 0)
 
     def test_create(self):
         dt = Dataset.objects.filter(uuid__isnull=False).exclude(uuid="").first()
@@ -170,6 +164,26 @@ class TestResourceManager(GeoNodeBaseTestSupport):
 
         # copy with maps
         res = create_single_map("A Test Map")
+        self.assertTrue(isinstance(res, Map))
+        _copy_assert_resource(res, "A Test Map 2")
+
+    def test_resource_copy_with_linked_resources(self):
+        def _copy_assert_resource(res, title):
+            dataset_copy = None
+            try:
+                dataset_copy = self.rm.copy(res, defaults=dict(title=title))
+                self.assertIsNotNone(dataset_copy)
+                self.assertEqual(dataset_copy.title, title)
+            finally:
+                if dataset_copy:
+                    dataset_copy.delete()
+                self.assertIsNotNone(res)
+                res.delete()
+
+        # copy with maps
+        res = create_single_map("A Test Map")
+        target = ResourceBase.objects.first()
+        LinkedResource.objects.get_or_create(source_id=res.id, target_id=target.id)
         self.assertTrue(isinstance(res, Map))
         _copy_assert_resource(res, "A Test Map 2")
 

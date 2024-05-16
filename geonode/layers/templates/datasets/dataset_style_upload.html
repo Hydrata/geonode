@@ -1,7 +1,6 @@
 {% extends "upload/dataset_upload_metadata_base.html" %}
 {% load i18n %}
 {% load static %}
-{% load pinax_ratings_tags %}
 {% load bootstrap_tags %}
 {% load pagination_tags %}
 {% load base_tags %}
@@ -81,6 +80,7 @@
 
       csrf_token =  "{{ csrf_token }}",
       form_target = "{{ LAYER_ANCILLARY_FILES_UPLOAD_URL }}",
+      executions_status_endpoint = "{{EXECUTION_STATUS_ENDPOINT}}",
       time_enabled = false,
       mosaic_enabled = false,
       userLookup = "{% url "account_ajax_lookup" %}"

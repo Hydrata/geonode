@@ -1,4 +1,7 @@
+from typing import List
+
 from dal_select2_taggit.widgets import TaggitSelect2
+from django.http.request import QueryDict
 
 
 class TaggitSelect2Custom(TaggitSelect2):
@@ -20,3 +23,18 @@ class TaggitSelect2Custom(TaggitSelect2):
             return value
         except TypeError:
             return ""
+
+
+class TaggitProfileSelect2Custom(TaggitSelect2):
+    """Overriding Select2 tag widget for ContactRoleField."""
+
+    def value_from_datadict(self, data, files, name) -> List[str]:
+        """Handle multi-profiles.
+
+        returns list of selected elements
+        """
+        if type(data) is dict and name in data:
+            return data[name]
+        elif type(data) is QueryDict:
+            return data.getlist(name)
+        return []

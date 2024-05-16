@@ -18,6 +18,7 @@
 #########################################################################
 import errno
 import logging
+from requests.exceptions import ConnectionError
 
 from deprecated import deprecated
 from geoserver.layer import Layer as GsLayer
@@ -38,9 +39,9 @@ from .tasks import geoserver_cascading_delete, geoserver_post_save_datasets
 
 logger = logging.getLogger("geonode.geoserver.signals")
 
-geoserver_automatic_default_style_set = Signal(providing_args=["instance"])
+geoserver_automatic_default_style_set = Signal()
 
-geofence_rule_assign = Signal(providing_args=["instance"])
+geofence_rule_assign = Signal()
 
 
 def geoserver_delete(typename):
@@ -90,10 +91,13 @@ def geoserver_pre_save_maplayer(instance, sender, **kwargs):
 
     try:
         instance.local = isinstance(gs_catalog.get_layer(instance.name), GsLayer)
+    except ConnectionError as e:
+        logger.warning(f"Could not connect to catalog to verify if layer {instance.name} was local: {e}")
     except OSError as e:
+        logger.warning(f"***** OSERROR TYPE:{type(e)} ERR:{e} ERRNO:{e.errno}")
         if e.errno == errno.ECONNREFUSED:
             msg = f"Could not connect to catalog to verify if layer {instance.name} was local"
-            logger.warn(msg)
+            logger.warning(msg)
         else:
             raise e
 

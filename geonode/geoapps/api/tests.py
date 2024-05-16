@@ -76,6 +76,39 @@ class GeoAppsApiTests(APITestCase):
             json.loads(response.data["geoapps"][0]["data"]), {"test_data": {"test": ["test_1", "test_2", "test_3"]}}
         )
 
+    def test_geoapp_listing_advertised(self):
+        app = GeoApp.objects.first()
+        app.advertised = False
+        app.save()
+
+        url = reverse("geoapps-list")
+
+        payload = self.client.get(url)
+
+        prev_count = payload.json().get("total")
+        # the user can see only the advertised resources
+        self.assertEqual(GeoApp.objects.filter(advertised=True).count(), prev_count)
+
+        payload = self.client.get(f"{url}?advertised=True")
+        # so if advertised is True, we dont see the advertised=False resource
+        new_count = payload.json().get("total")
+        # recheck the count
+        self.assertEqual(new_count, prev_count)
+
+        payload = self.client.get(f"{url}?advertised=False")
+        # so if advertised is False, we see only the resource with advertised==False
+        new_count = payload.json().get("total")
+        # recheck the count
+        self.assertEqual(new_count, 1)
+
+        # if all is requested, we will see all the resources
+        payload = self.client.get(f"{url}?advertised=all")
+        new_count = payload.json().get("total")
+        # recheck the count
+        self.assertEqual(new_count, prev_count + 1)
+
+        GeoApp.objects.update(advertised=True)
+
     def test_extra_metadata_included_with_param(self):
         _app = GeoApp.objects.first()
         url = urljoin(f"{reverse('geoapps-list')}/", f"{_app.pk}")
@@ -95,9 +128,23 @@ class GeoAppsApiTests(APITestCase):
         self.assertTrue(self.client.login(username="bobby", password="bob"))
         # Create
         url = f"{reverse('geoapps-list')}?include[]=data"
-        data = {"name": "Test Create", "title": "Test Create", "resource_type": "geostory", "owner": "bobby"}
+        data = {
+            "name": "Test Create",
+            "title": "Test Create",
+            "resource_type": "geostory",
+            "owner": "bobby",
+            "extent": {"coords": [1123692.0, 5338214.0, 1339852.0, 5482615.0], "srid": "EPSG:3857"},
+        }
         response = self.client.post(url, data=data, format="json")
         self.assertEqual(response.status_code, 201)  # 201 - Created
+
+        x = GeoApp.objects.filter(title="Test Create").first()
+        self.assertEqual(x.srid, "EPSG:3857")
+        self.assertEqual(response.json()["geoapp"].get("extent")["srid"], "EPSG:4326")
+        self.assertEqual(
+            response.json()["geoapp"].get("extent")["coords"],
+            [10.094296982428332, 43.1721654049465, 12.03609530058109, 44.11086592050112],
+        )
 
         response = self.client.get(url, format="json")
         self.assertEqual(response.status_code, 200)

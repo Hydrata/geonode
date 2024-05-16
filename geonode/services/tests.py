@@ -770,21 +770,21 @@ class WmsServiceHandlerTestCase(GeoNodeBaseTestSupport):
             self.assertEqual(s.title, "Foo Title")
             self.assertEqual(s.description, "Foo Description")
             self.assertEqual(s.abstract, "Foo Abstract")
-            self.assertEqual(["Foo", "OWS", "Service"], list(s.keywords.values_list("name", flat=True)))
+            self.assertSetEqual({"Foo", "OWS", "Service"}, set(list(s.keywords.values_list("name", flat=True))))
             response = self.client.post(reverse("remove_service", args=(s.id,)))
             self.assertEqual(len(Service.objects.all()), 0)
 
     @flaky(max_runs=3)
     def test_add_duplicate_remote_service_url(self):
         form_data = {
-            "url": "https://demo.geosolutionsgroup.com/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities",
+            "url": "https://gs-stable.geo-solutions.it/geoserver/wms?service=wms&version=1.3.0&request=GetCapabilities",
             "type": enumerations.WMS,
         }
 
         self.client.login(username="serviceowner", password="somepassword")
 
         # Add the first resource
-        url = "https://demo.geosolutionsgroup.com/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities"
+        url = "https://gs-stable.geo-solutions.it/geoserver/wms?service=wms&version=1.3.0&request=GetCapabilities"
         # url = "http://fake"
         service_type = enumerations.WMS
         form_data = {"url": url, "type": service_type}
@@ -833,7 +833,7 @@ class WmsServiceHarvestingTestCase(StaticLiveServerTestCase):
             reg_url = reverse("register_service")
             cls.client.get(reg_url)
 
-            url = "https://demo.geosolutionsgroup.com/geoserver/ows?service=wms&version=1.3.0&request=GetCapabilities"
+            url = "https://gs-stable.geo-solutions.it/geoserver/wms"
             service_type = enumerations.WMS
             form_data = {"url": url, "type": service_type}
             forms.CreateServiceForm(form_data)

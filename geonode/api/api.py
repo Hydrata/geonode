@@ -22,7 +22,6 @@ import time
 
 from django.apps import apps
 from django.db.models import Q
-from django.conf.urls import url
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.urls import reverse
@@ -61,7 +60,6 @@ from tastypie.serializers import Serializer
 from tastypie import fields
 from tastypie.resources import ModelResource
 from tastypie.constants import ALL, ALL_WITH_RELATIONS
-from tastypie.utils import trailing_slash
 
 from geonode.utils import check_ogc_backend
 from geonode.security.utils import get_visible_resources
@@ -543,20 +541,12 @@ class ProfileResource(TypeFilteredResource):
                 documents_count=bundle.data.get("documents_count", 0),
                 maps_count=bundle.data.get("maps_count", 0),
                 layers_count=bundle.data.get("layers_count", 0),
+                organization=bundle.data.get("organization", 0),
             )
         return bundle
 
     def prepend_urls(self):
-        if settings.HAYSTACK_SEARCH:
-            return [
-                url(
-                    r"^(?P<resource_name>{})/search{}$".format(self._meta.resource_name, trailing_slash()),
-                    self.wrap_view("get_search"),
-                    name="api_get_search",
-                ),
-            ]
-        else:
-            return []
+        return []
 
     def serialize(self, request, data, format, options=None):
         if options is None:

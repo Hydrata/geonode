@@ -18,13 +18,10 @@
 <link href="{% static "vendor/select2/dist/css/select2.css" %}" type="text/css" media="screen" rel="stylesheet" />
 <link href="{% static "autocomplete_light/select2.css" %}" type="text/css" media="screen" rel="stylesheet" />
 <script type="text/javascript" src="{% static "admin/js/vendor/jquery/jquery.js" %}"></script>
-<script type="text/javascript" src="{% static "autocomplete_light/jquery.init.js" %}"></script>
+<script type="text/javascript" src="{% static "autocomplete_light/autocomplete_light.min.js" %}"></script>
 <script type="text/javascript" src="{% static "vendor/select2/dist/js/select2.full.js" %}"></script>
 <script type="text/javascript" src="{% static "vendor/select2/dist/js/i18n/en.js" %}"></script>
-<script type="text/javascript" src="{% static "autocomplete_light/autocomplete.init.js" %}"></script>
-<script type="text/javascript" src="{% static "autocomplete_light/forward.js" %}"></script>
 <script type="text/javascript" src="{% static "autocomplete_light/select2.js" %}"></script>
-<script type="text/javascript" src="{% static "autocomplete_light/jquery.post-setup.js" %}"></script>
 
 <div class="page-header">
   <a href="{% document_list_url %}" class="btn btn-primary pull-right">{% trans "Explore Documents" %}</a>
@@ -37,12 +34,12 @@
     </p>
 
     <form id="metadata_update" class="form-horizontal" action="{% url "document_metadata" document.id %}" method="POST">
-      {% if document_form.errors or category_form.errors or author_form.errors or poc.errors %}
+      {% if document_form.errors or category_form.errors or metadata_author_form.errors or poc.errors %}
         <p class="bg-danger">{% blocktrans %}Error updating metadata.  Please check the following fields: {% endblocktrans %}</p>
         <ul class="bg-danger">
-        {% if author_form.errors %}
+        {% if metadata_author_form.errors %}
           <li>{% trans "Metadata Author" %}</li>
-          {{ author_form.errors }}
+          {{ metadata_author_form.errors }}
         {% endif %}
         {% if poc_form.errors %}
           <li>{% trans "Point of Contact" %}</li>
@@ -109,16 +106,10 @@
               <div class="col-md-6">
                 <label class="fancy-checkbox form_item_spacing">
                     <input type="radio" name="category_choice_field" value="{{ choice.0 }}"
-                      {% ifequal category_form.initial choice.0 %} checked="checked" {% endifequal %} />
+                      {% if category_form.initial == choice.0 %} checked="checked" {% endif %} />
                       {{ choice.1 }}
                 </label>
               </div>
-              <!-- div class="radio col-md-6">
-                <input type="radio" name="category_choice_field" value="{{ choice.0 }}"
-                  {% ifequal category_form.initial choice.0 %} checked="checked" {% endifequal %}>
-                  {{ choice.1 }}
-                </input>
-              </div -->
               {% endfor %}
               {% endautoescape %}
             </fieldset>
@@ -132,7 +123,7 @@
               </fieldset>
               <fieldset class="form-controls modal-forms modal hide fade" id="metadata_form">
                 <h2>{% trans "Metadata Provider" %}</h2>
-                  {{ author_form|as_bootstrap }}
+                  {{ metadata_author_form|as_bootstrap }}
                 <button type='button' class="modal-cloose-btn btn btn-primary">{% trans "Done" %}</button>
               </fieldset>
               <div class="form-actions">

@@ -28,7 +28,8 @@ from geonode.base.api.serializers import (
     DetailUrlField,
     BaseDynamicModelSerializer,
     ResourceBaseSerializer,
-    ResourceBaseToRepresentationSerializerMixin,
+    PermsSerializer,
+    LinksSerializer,
 )
 from geonode.layers.api.serializers import FeatureInfoTemplateField, StyleSerializer
 from geonode.layers.models import Dataset
@@ -105,10 +106,13 @@ class DynamicFullyEmbedM2MRelationField(DynamicRelationField):
         return instance_list
 
 
-class MapLayerDatasetSerializer(ResourceBaseToRepresentationSerializerMixin):
+class MapLayerDatasetSerializer(DynamicModelSerializer):
     default_style = DynamicRelationField(StyleSerializer, embed=True, many=False, read_only=True)
     styles = DynamicRelationField(StyleSerializer, embed=True, many=True, read_only=True)
     featureinfo_custom_template = FeatureInfoTemplateField()
+
+    perms = DynamicRelationField(PermsSerializer, source="id", read_only=True)
+    links = DynamicRelationField(LinksSerializer, source="id", read_only=True)
 
     class Meta:
         model = Dataset
@@ -118,6 +122,7 @@ class MapLayerDatasetSerializer(ResourceBaseToRepresentationSerializerMixin):
             "featureinfo_custom_template",
             "title",
             "perms",
+            "links",
             "pk",
             "has_time",
             "default_style",
@@ -138,6 +143,9 @@ class MapLayerSerializer(DynamicModelSerializer):
             "current_style",
             "dataset",
             "name",
+            "order",
+            "visibility",
+            "opacity",
         )
 
 
@@ -145,12 +153,7 @@ class SimpleMapLayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = MapLayer
         name = "maplayer"
-        fields = (
-            "pk",
-            "name",
-            "extra_params",
-            "current_style",
-        )
+        fields = ("pk", "name", "extra_params", "current_style", "order", "visibility", "opacity")
 
 
 class MapSerializer(ResourceBaseSerializer):
@@ -160,7 +163,18 @@ class MapSerializer(ResourceBaseSerializer):
         model = Map
         name = "map"
         view_name = "maps-list"
-        fields = ("pk", "uuid", "urlsuffix", "featuredurl", "data", "maplayers", "executions", "metadata")
+        fields = list(
+            set(
+                ResourceBaseSerializer.Meta.fields
+                + (
+                    "uuid",
+                    "urlsuffix",
+                    "featuredurl",
+                    "data",
+                    "maplayers",
+                )
+            )
+        )
 
 
 class SimpleMapSerializer(BaseDynamicModelSerializer):

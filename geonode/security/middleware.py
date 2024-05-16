@@ -47,7 +47,6 @@ if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         reverse("help"),
         reverse("dataset_acls"),
         reverse("dataset_acls_dep"),
-        reverse("dataset_resolve_user"),
         reverse("dataset_resolve_user_dep"),
         reverse("proxy"),
         "/account/(?!.*(?:signup))",
@@ -70,7 +69,6 @@ white_list = [compile(x) for x in white_list_paths + getattr(settings, "AUTH_EXE
 
 
 class LoginRequiredMiddleware(MiddlewareMixin):
-
     """
     Requires a user to be logged in to access any page that is not white-listed.
 
@@ -141,7 +139,7 @@ class SessionControlMiddleware(MiddlewareMixin):
         finally:
             try:
                 from django.contrib import messages
-                from django.utils.translation import ugettext_noop as _
+                from django.utils.translation import gettext_noop as _
 
                 messages.warning(request, _("Session is Expired. Please login again!"))
             except Exception:
@@ -188,7 +186,7 @@ class AdminAllowedMiddleware(MiddlewareMixin):
                     finally:
                         try:
                             from django.contrib import messages
-                            from django.utils.translation import ugettext_noop as _
+                            from django.utils.translation import gettext_noop as _
 
                             messages.warning(request, _("Admin access forbidden from {visitor_ip}"))
                         except Exception:

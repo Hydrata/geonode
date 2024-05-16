@@ -16,6 +16,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+import itertools
 import re
 import logging
 
@@ -24,7 +25,7 @@ from django.db import models
 from django.urls import reverse
 from django.utils.timezone import now
 from django.utils.functional import classproperty
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from tinymce.models import HTMLField
 
@@ -38,7 +39,7 @@ from geonode.security.permissions import (
     DOWNLOAD_PERMISSIONS,
     DATASET_ADMIN_PERMISSIONS,
 )
-from geonode.base.models import ResourceBase, ResourceBaseManager
+from geonode.base.models import ResourceBase, ResourceBaseManager, LinkedResource
 
 logger = logging.getLogger("geonode.layers.models")
 
@@ -60,7 +61,6 @@ TIME_REGEX_FORMAT = {"[0-9]{8}": "%Y%m%d", "[0-9]{8}T[0-9]{6}": "%Y%m%dT%H%M%S",
 
 
 class Style(models.Model, PermissionLevelMixin):
-
     """Model for storing styles."""
 
     name = models.CharField(_("style name"), max_length=255, unique=True)
@@ -102,7 +102,6 @@ class DatasetManager(ResourceBaseManager):
 
 
 class Dataset(ResourceBase):
-
     """
     Dataset (inherits ResourceBase fields)
     """
@@ -317,21 +316,21 @@ class Dataset(ResourceBase):
         map_ids = list(self.maplayers.values_list("map__id", flat=True))
         return Map.objects.filter(id__in=map_ids)
 
-    @property
-    def linked_resources(self):
-        from geonode.documents.models import DocumentResourceLink
+    def get_linked_resources(self, as_target: bool = False):
+        ret = super().get_linked_resources(as_target)
 
-        _map_ids = list(self.maplayers.values_list("map__id", flat=True))
-        _doc_ids = list(DocumentResourceLink.objects.filter(object_id=self.pk).values_list("document__pk", flat=True))
-        return ResourceBase.objects.filter(id__in=list(set(_map_ids + _doc_ids)))
+        if as_target:
+            # create LinkedResources on the fly to report MapLayer relationship
+            res = (LinkedResource(source=map, target=self, internal=True) for map in self.maps)
+            ret = itertools.chain(ret, res)
+
+        return ret
 
     @property
     def download_url(self):
         if self.subtype not in ["vector", "raster", "vector_time"]:
             logger.info("Download URL is available only for datasets that have been harvested and copied locally")
             return None
-        if self.link_set.filter(resource=self.get_self_resource(), link_type="original").exists():
-            return self.link_set.filter(resource=self.get_self_resource(), link_type="original").first().url
         return build_absolute_uri(reverse("dataset_download", args=(self.alternate,)))
 
     @property
@@ -375,7 +374,6 @@ class Dataset(ResourceBase):
 
 
 class AttributeManager(models.Manager):
-
     """Helper class to access filtered attributes"""
 
     def visible(self):
@@ -383,7 +381,6 @@ class AttributeManager(models.Manager):
 
 
 class Attribute(models.Model):
-
     """
      Auxiliary model for storing layer attributes.
 

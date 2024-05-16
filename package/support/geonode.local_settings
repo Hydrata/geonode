@@ -98,12 +98,16 @@ GEOSERVER_PUBLIC_LOCATION = os.getenv(
     'GEOSERVER_PUBLIC_LOCATION', '{}gs/'.format(SITEURL)
 )
 
-OGC_SERVER_DEFAULT_USER = os.getenv(
+GEOSERVER_ADMIN_USER = os.getenv(
     'GEOSERVER_ADMIN_USER', 'admin'
 )
 
-OGC_SERVER_DEFAULT_PASSWORD = os.getenv(
+GEOSERVER_ADMIN_PASSWORD = os.getenv(
     'GEOSERVER_ADMIN_PASSWORD', 'geoserver'
+)
+
+GEOSERVER_FACTORY_PASSWORD = os.getenv(
+    'GEOSERVER_FACTORY_PASSWORD', 'geoserver'
 )
 
 # OGC (WMS/WFS/WCS) Server Settings
@@ -117,8 +121,8 @@ OGC_SERVER = {
         # the proxy won't work and the integration tests will fail
         # the entire block has to be overridden in the local_settings
         'PUBLIC_LOCATION': GEOSERVER_PUBLIC_LOCATION,
-        'USER': OGC_SERVER_DEFAULT_USER,
-        'PASSWORD': OGC_SERVER_DEFAULT_PASSWORD,
+        'USER': GEOSERVER_ADMIN_USER,
+        'PASSWORD': GEOSERVER_ADMIN_PASSWORD,
         'MAPFISH_PRINT_ENABLED': True,
         'PRINT_NG_ENABLED': True,
         'GEONODE_SECURITY_ENABLED': True,
@@ -323,33 +327,6 @@ CELERY_ALWAYS_EAGER = True
 CELERYD_LOG_FILE = None
 CELERY_REDIRECT_STDOUTS = True
 CELERYD_LOG_LEVEL = 1
-
-# Haystack Search Backend Configuration. To enable,
-# first install the following:
-# - pip install django-haystack
-# - pip install elasticsearch==2.4.0
-# - pip install woosh
-# - pip install pyelasticsearch
-# Set HAYSTACK_SEARCH to True
-# Run "python manage.py rebuild_index"
-# HAYSTACK_SEARCH = False
-# Avoid permissions prefiltering
-SKIP_PERMS_FILTER = False
-# Update facet counts from Haystack
-HAYSTACK_FACET_COUNTS = True
-HAYSTACK_CONNECTIONS = {
-    'default': {
-        'ENGINE': 'haystack.backends.elasticsearch2_backend.Elasticsearch2SearchEngine',
-        'URL': 'http://127.0.0.1:9200/',
-        'INDEX_NAME': 'haystack',
-    },
-    #    'db': {
-    #        'ENGINE': 'haystack.backends.simple_backend.SimpleEngine',
-    #        'EXCLUDED_INDEXES': ['thirdpartyapp.search_indexes.BarIndex'],
-    #        }
-}
-HAYSTACK_SIGNAL_PROCESSOR = 'haystack.signals.RealtimeSignalProcessor'
-# HAYSTACK_SEARCH_RESULTS_PER_PAGE = 20
 
 LOGGING = {
     'version': 1,

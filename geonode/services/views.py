@@ -28,7 +28,7 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
 from django.shortcuts import render
 from django.template import loader
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext_lazy as _
 from django.contrib.auth.decorators import login_required
 
 from geonode.base.models import ResourceBase
@@ -352,5 +352,5 @@ def remove_service(request, service_id):
     elif request.method == "POST":
         service.dataset_set.all().delete()
         service.delete()
-        messages.add_message(request, messages.INFO, _(f"Service {service.name} has been deleted"))
+        messages.add_message(request, messages.INFO, _(f"Service {service.title} has been deleted"))
         return HttpResponseRedirect(reverse("services"))

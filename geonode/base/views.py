@@ -31,7 +31,7 @@ from django.views.generic import FormView
 from django.http import HttpResponseRedirect
 from django.contrib.auth import get_user_model
 from django.contrib import messages
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import PermissionDenied
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -280,6 +280,28 @@ class ResourceBaseAutocomplete(autocomplete.Select2QuerySetView):
             unpublished_not_visible=settings.RESOURCE_PUBLISHING,
             private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES,
         )[:100]
+
+
+class LinkedResourcesAutocomplete(autocomplete.Select2QuerySetView):
+    def get_queryset(self):
+        qs = ResourceBase.objects.order_by("title")
+
+        if self.q:
+            qs = qs.filter(title__icontains=self.q)
+
+        if self.forwarded and "exclude" in self.forwarded:
+            qs = qs.exclude(pk=self.forwarded["exclude"])
+
+        return get_visible_resources(
+            qs,
+            self.request.user if self.request else None,
+            admin_approval_required=settings.ADMIN_MODERATE_UPLOADS,
+            unpublished_not_visible=settings.RESOURCE_PUBLISHING,
+            private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES,
+        )
+
+    def get_result_label(self, result):
+        return f"{result.title} [{_(result.polymorphic_ctype.model)}]"
 
 
 class RegionAutocomplete(SimpleSelect2View):

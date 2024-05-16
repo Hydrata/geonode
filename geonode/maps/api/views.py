@@ -31,8 +31,10 @@ from rest_framework.response import Response
 
 from geonode.base import register_event
 from geonode.base.api.filters import DynamicSearchFilter, ExtentFilter
+from geonode.base.api.mixins import AdvertisedListMixin
 from geonode.base.api.pagination import GeoNodeApiPagination
 from geonode.base.api.permissions import UserHasPerms
+from geonode.base.api.views import ApiPresetsInitializer
 from geonode.layers.api.serializers import DatasetSerializer
 from geonode.maps.api.exception import GeneralMapsException
 from geonode.maps.api.permissions import MapPermissionsFilter
@@ -47,7 +49,7 @@ from geonode.utils import resolve_object
 logger = logging.getLogger(__name__)
 
 
-class MapViewSet(DynamicModelViewSet):
+class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin):
     """
     API endpoint that allows maps to be viewed or edited.
     """
@@ -96,7 +98,7 @@ class MapViewSet(DynamicModelViewSet):
         description="API endpoint allowing to retrieve the MapLayers list.",
     )
     @action(detail=True, methods=["get"])
-    def maplayers(self, request, pk=None):
+    def maplayers(self, request, pk=None, *args, **kwargs):
         map = self.get_object()
         resources = map.maplayers
         return Response(MapLayerSerializer(embed=True, many=True).to_representation(resources))
@@ -107,7 +109,7 @@ class MapViewSet(DynamicModelViewSet):
         description="API endpoint allowing to retrieve the local MapLayers.",
     )
     @action(detail=True, methods=["get"])
-    def datasets(self, request, pk=None):
+    def datasets(self, request, pk=None, *args, **kwargs):
         map = self.get_object()
         resources = map.datasets
         return Response(DatasetSerializer(embed=True, many=True).to_representation(resources))

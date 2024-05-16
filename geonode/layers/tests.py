@@ -17,30 +17,25 @@
 #
 #########################################################################
 
-import io
 import itertools
 import os
 import shutil
-import gisdata
 import logging
-import zipfile
 
 from uuid import uuid4
 from unittest.mock import MagicMock, patch
 from collections import namedtuple
-from pinax.ratings.models import OverallRating
 
 from django.urls import reverse
 from django.test import TestCase
 from django.forms import ValidationError
 from django.test.client import RequestFactory
-from django.contrib.contenttypes.models import ContentType
-from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.contrib.auth.models import Group
 from django.contrib.gis.geos import Polygon
 from django.db.models import Count
 from django.contrib.auth import get_user_model
+from django.http import HttpResponse
 
 from django.conf import settings
 from django.test.utils import override_settings
@@ -48,8 +43,9 @@ from django.contrib.admin.sites import AdminSite
 from geonode.geoserver.createlayer.utils import create_dataset
 
 from geonode.layers import utils
+from geonode.layers.utils import clear_dataset_download_handlers
 from geonode.base import enumerations
-from geonode.layers import DatasetAppConfig
+from geonode.layers.apps import DatasetAppConfig
 from geonode.layers.admin import DatasetAdmin
 from geonode.decorators import on_ogc_backend
 from geonode.maps.models import Map, MapLayer
@@ -57,12 +53,13 @@ from geonode.utils import DisableDjangoSignals, mkdtemp
 from geonode.layers.views import _resolve_dataset
 from geonode import GeoNodeException, geoserver
 from geonode.people.utils import get_valid_user
+from geonode.people import Roles
 from guardian.shortcuts import get_anonymous_user
 from geonode.tests.base import GeoNodeBaseTestSupport
 from geonode.resource.manager import resource_manager
 from geonode.tests.utils import NotificationsTestsHelper
 from geonode.layers.models import Dataset, Style, Attribute
-from geonode.layers.forms import DatasetForm, DatasetTimeSerieForm, JSONField, LayerUploadForm
+from geonode.layers.forms import DatasetForm, DatasetTimeSerieForm, JSONField
 from geonode.layers.populate_datasets_data import create_dataset_data
 from geonode.base.models import TopicCategory, License, Region, Link
 from geonode.utils import check_ogc_backend, set_resource_default_links
@@ -70,23 +67,20 @@ from geonode.layers.metadata import convert_keyword, set_metadata, parse_metadat
 from geonode.groups.models import GroupProfile
 
 from geonode.layers.utils import (
-    is_sld_upload_only,
-    is_xml_upload_only,
     dataset_type,
     get_files,
     get_valid_name,
     get_valid_dataset_name,
     surrogate_escape_string,
-    validate_input_source,
 )
 
 from geonode.base.populate_test_data import all_public, create_models, remove_models, create_single_dataset
+from geonode.layers.download_handler import DatasetDownloadHandler
 
 logger = logging.getLogger(__name__)
 
 
 class DatasetsTest(GeoNodeBaseTestSupport):
-
     """Tests geonode.layers app/module"""
 
     type = "dataset"
@@ -323,6 +317,7 @@ class DatasetsTest(GeoNodeBaseTestSupport):
     def test_dataset_links(self):
         lyr = Dataset.objects.filter(subtype="vector").first()
         self.assertEqual(lyr.subtype, "vector")
+
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
             links = Link.objects.filter(resource=lyr.resourcebase_ptr, link_type="metadata")
             self.assertIsNotNone(links)
@@ -373,11 +368,6 @@ class DatasetsTest(GeoNodeBaseTestSupport):
             links = Link.objects.filter(resource=lyr.resourcebase_ptr, link_type="image")
             self.assertIsNotNone(links)
 
-            Link.objects.filter(resource=lyr.resourcebase_ptr, link_type="original").update(
-                url="http://google.com/test"
-            )
-            self.assertEqual(lyr.download_url, "http://google.com/test")
-
     def test_get_valid_user(self):
         # Verify it accepts an admin user
         adminuser = get_user_model().objects.get(is_superuser=True)
@@ -401,134 +391,6 @@ class DatasetsTest(GeoNodeBaseTestSupport):
 
         nn = get_anonymous_user()
         self.assertRaises(GeoNodeException, get_valid_user, nn)
-
-    def testShapefileValidation(self):
-        files = dict(
-            base_file=SimpleUploadedFile("foo.shp", b" "),
-            shx_file=SimpleUploadedFile("foo.shx", b" "),
-            dbf_file=SimpleUploadedFile("foo.dbf", b" "),
-            prj_file=SimpleUploadedFile("foo.prj", b" "),
-        )
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.SHP", b" "),
-            shx_file=SimpleUploadedFile("foo.SHX", b" "),
-            dbf_file=SimpleUploadedFile("foo.DBF", b" "),
-            prj_file=SimpleUploadedFile("foo.PRJ", b" "),
-        )
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.SHP", b" "),
-            shx_file=SimpleUploadedFile("foo.shx", b" "),
-            dbf_file=SimpleUploadedFile("foo.dbf", b" "),
-        )
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.SHP", b" "),
-            shx_file=SimpleUploadedFile("foo.shx", b" "),
-            dbf_file=SimpleUploadedFile("foo.dbf", b" "),
-            prj_file=SimpleUploadedFile("foo.PRJ", b" "),
-        )
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.SHP", b" "),
-            shx_file=SimpleUploadedFile("bar.shx", b" "),
-            dbf_file=SimpleUploadedFile("bar.dbf", b" "),
-            prj_file=SimpleUploadedFile("bar.PRJ", b" "),
-        )
-        self.assertFalse(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.shp", b" "),
-            dbf_file=SimpleUploadedFile("foo.dbf", b" "),
-            prj_file=SimpleUploadedFile("foo.PRJ", b" "),
-        )
-        self.assertFalse(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(
-            base_file=SimpleUploadedFile("foo.txt", b" "),
-            shx_file=SimpleUploadedFile("foo.shx", b" "),
-            dbf_file=SimpleUploadedFile("foo.sld", b" "),
-            prj_file=SimpleUploadedFile("foo.prj", b" "),
-        )
-        self.assertFalse(LayerUploadForm(dict(), files).is_valid())
-
-    def testGeoTiffValidation(self):
-        files = dict(base_file=SimpleUploadedFile("foo.tif", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.TIF", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.tiff", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.TIF", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.geotif", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.GEOTIF", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.geotiff", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.GEOTIF", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-    def testASCIIValidation(self):
-        files = dict(base_file=SimpleUploadedFile("foo.asc", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-        files = dict(base_file=SimpleUploadedFile("foo.ASC", b" "))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-
-    def testZipValidation(self):
-        the_zip = zipfile.ZipFile("test_upload.zip", "w")
-        in_memory_file = io.StringIO()
-        in_memory_file.write("test")
-        the_zip.writestr("foo.shp", in_memory_file.getvalue())
-        the_zip.writestr("foo.dbf", in_memory_file.getvalue())
-        the_zip.writestr("foo.shx", in_memory_file.getvalue())
-        the_zip.writestr("foo.prj", in_memory_file.getvalue())
-        the_zip.close()
-        files = dict(base_file=SimpleUploadedFile("test_upload.zip", open("test_upload.zip", mode="rb").read()))
-        self.assertTrue(LayerUploadForm(dict(), files).is_valid())
-        os.remove("test_upload.zip")
-
-    def testWriteFiles(self):
-        files = dict(
-            base_file=SimpleUploadedFile("foo.shp", b" "),
-            shx_file=SimpleUploadedFile("foo.shx", b" "),
-            dbf_file=SimpleUploadedFile("foo.dbf", b" "),
-            prj_file=SimpleUploadedFile("foo.prj", b" "),
-        )
-        form = LayerUploadForm(dict(), files)
-        self.assertTrue(form.is_valid())
-
-        tempdir = form.write_files()[0]
-        self.assertEqual(set(os.listdir(tempdir)), {"foo.shp", "foo.shx", "foo.dbf", "foo.prj"})
-
-        the_zip = zipfile.ZipFile("test_upload.zip", "w")
-        in_memory_file = io.StringIO()
-        in_memory_file.write("test")
-        the_zip.writestr("foo.shp", in_memory_file.getvalue())
-        the_zip.writestr("foo.dbf", in_memory_file.getvalue())
-        the_zip.writestr("foo.shx", in_memory_file.getvalue())
-        the_zip.writestr("foo.prj", in_memory_file.getvalue())
-        the_zip.close()
-        files = dict(base_file=SimpleUploadedFile("test_upload.zip", open("test_upload.zip", mode="rb").read()))
-        form = LayerUploadForm(dict(), files)
-        self.assertTrue(form.is_valid())
-        tempdir = form.write_files()[0]
-        self.assertEqual(set(os.listdir(tempdir)), {"foo.shp", "foo.shx", "foo.dbf", "foo.prj"})
-        os.remove("test_upload.zip")
 
     def test_dataset_type(self):
         self.assertEqual(dataset_type("foo.shp"), "vector")
@@ -728,22 +590,6 @@ class DatasetsTest(GeoNodeBaseTestSupport):
 
         # text which is not JSON should fail
         self.assertRaises(ValidationError, lambda: field.clean("<users></users>"))
-
-    def test_rating_dataset_remove(self):
-        """Test layer rating is removed on layer remove"""
-        # Get the layer to work with
-        layer = Dataset.objects.all()[3]
-        dataset_id = layer.id
-        # Create the rating with the correct content type
-        ctype = ContentType.objects.get(model="dataset")
-        OverallRating.objects.create(category=2, object_id=dataset_id, content_type=ctype, rating=3)
-        rating = OverallRating.objects.all()
-        self.assertEqual(rating.count(), 1)
-        # Remove the layer
-        resource_manager.delete(layer.uuid)
-        # Check there are no ratings matching the remove layer
-        rating = OverallRating.objects.all()
-        self.assertEqual(rating.count(), 0)
 
     def test_sld_upload(self):
         """Test layer remove functionality"""
@@ -965,226 +811,6 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         if group_profile:
             group_profile.delete()
 
-    def test_xml_form_without_files_should_raise_500(self):
-        files = dict()
-        files["permissions"] = "{}"
-        files["charset"] = "utf-8"
-        self.client.login(username="admin", password="admin")
-        resp = self.client.post(reverse("dataset_upload"), data=files)
-        self.assertEqual(500, resp.status_code)
-
-    def test_xml_should_return_404_if_the_dataset_does_not_exists(self):
-        params = {
-            "permissions": '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
-            "base_file": open(self.exml_path),
-            "xml_file": open(self.exml_path),
-            "dataset_title": "Fake layer title",
-            "metadata_upload_form": True,
-            "time": False,
-            "charset": "UTF-8",
-        }
-
-        self.client.login(username="admin", password="admin")
-        resp = self.client.post(reverse("dataset_upload"), params)
-        self.assertEqual(404, resp.status_code)
-
-    def test_xml_should_update_the_dataset_with_the_expected_values(self):
-        params = {
-            "permissions": '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
-            "base_file": open(self.exml_path),
-            "xml_file": open(self.exml_path),
-            "dataset_title": "geonode:single_point",
-            "metadata_upload_form": True,
-            "time": False,
-            "charset": "UTF-8",
-        }
-
-        self.client.login(username="admin", password="admin")
-        prev_dataset = Dataset.objects.get(typename="geonode:single_point")
-        self.assertEqual(0, prev_dataset.keywords.count())
-        resp = self.client.post(reverse("dataset_upload"), params)
-        self.assertEqual(404, resp.status_code)
-        self.assertEqual(
-            resp.json()["errors"], "The UUID identifier from the XML Metadata, is different from the one saved"
-        )
-
-    def test_sld_should_raise_500_if_is_invalid(self):
-        layer = Dataset.objects.get(typename="geonode:single_point")
-
-        params = {
-            "permissions": '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
-            "base_file": open(self.sld_path),
-            "sld_file": open(self.sld_path),
-            "dataset_title": "random",
-            "metadata_upload_form": False,
-            "time": False,
-            "charset": "UTF-8",
-        }
-
-        self.client.login(username="admin", password="admin")
-        self.assertGreaterEqual(layer.styles.count(), 1)
-        self.assertIsNotNone(layer.styles.first())
-        resp = self.client.post(reverse("dataset_upload"), params)
-        self.assertEqual(500, resp.status_code)
-        self.assertFalse(resp.json().get("success"))
-        self.assertEqual("No Dataset matches the given query.", resp.json().get("errors"))
-
-    def test_sld_should_update_the_dataset_with_the_expected_values(self):
-        layer = Dataset.objects.get(typename="geonode:single_point")
-
-        params = {
-            "permissions": '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
-            "base_file": open(self.sld_path),
-            "sld_file": open(self.sld_path),
-            "dataset_title": f"geonode:{layer.name}",
-            "metadata_upload_form": False,
-            "time": False,
-            "charset": "UTF-8",
-        }
-
-        self.client.login(username="admin", password="admin")
-        self.assertGreaterEqual(layer.styles.count(), 1)
-        self.assertIsNotNone(layer.styles.first())
-        resp = self.client.post(reverse("dataset_upload"), params)
-        self.assertEqual(200, resp.status_code)
-        updated_dataset = Dataset.objects.get(alternate=f"geonode:{layer.name}")
-        # just checking some values if are updated
-        self.assertGreaterEqual(updated_dataset.styles.all().count(), 1)
-        self.assertIsNotNone(updated_dataset.styles.first())
-        self.assertEqual(layer.styles.first().sld_title, updated_dataset.styles.first().sld_title)
-
-    def test_xml_should_raise_an_error_if_the_uuid_is_changed(self):
-        """
-        If the UUID coming from the XML and the one saved in the DB are different
-        The system should raise an error
-        """
-        params = {
-            "permissions": '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
-            "base_file": open(self.exml_path),
-            "xml_file": open(self.exml_path),
-            "dataset_title": "geonode:single_point",
-            "metadata_upload_form": True,
-            "time": False,
-            "charset": "UTF-8",
-        }
-
-        self.client.login(username="admin", password="admin")
-        prev_dataset = Dataset.objects.get(typename="geonode:single_point")
-        self.assertEqual(0, prev_dataset.keywords.count())
-        resp = self.client.post(reverse("dataset_upload"), params)
-        self.assertEqual(404, resp.status_code)
-        expected = {
-            "success": False,
-            "errors": "The UUID identifier from the XML Metadata, is different from the one saved",
-        }
-        self.assertDictEqual(expected, resp.json())
-
-    def test_will_raise_exception_for_replace_vector_dataset_with_raster(self):
-        layer = Dataset.objects.get(name="single_point")
-        filename = "/tpm/filename.tif"
-        files = ["/opt/file1.shp", "/opt/file2.ccc"]
-        with self.assertRaises(Exception) as e:
-            validate_input_source(layer, filename, files, action_type="append")
-        expected = "You are attempting to append a vector dataset with a raster."
-        self.assertEqual(expected, e.exception.args[0])
-
-    def test_will_raise_exception_for_replace_dataset_with_unknown_format(self):
-        layer = Dataset.objects.get(name="single_point")
-        filename = "/tpm/filename.ccc"
-        file_path = gisdata.VECTOR_DATA
-        files = {
-            "shp": filename,
-            "dbf": f"{file_path}/san_andres_y_providencia_highway.asd",
-            "prj": f"{file_path}/san_andres_y_providencia_highway.asd",
-            "shx": f"{file_path}/san_andres_y_providencia_highway.asd",
-        }
-        with self.assertRaises(Exception) as e:
-            validate_input_source(layer, filename, files, action_type="append")
-        expected = "You are attempting to append a vector dataset with an unknown format."
-        self.assertEqual(expected, e.exception.args[0])
-
-    def test_will_raise_exception_for_replace_dataset_with_different_file_name(self):
-        layer = Dataset.objects.get(name="single_point")
-        file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "san_andres_y_providencia_highway.shp")
-        files = {
-            "shp": filename,
-            "dbf": f"{file_path}/san_andres_y_providencia_highway.sbf",
-            "prj": f"{file_path}/san_andres_y_providencia_highway.prj",
-            "shx": f"{file_path}/san_andres_y_providencia_highway.shx",
-        }
-        with self.assertRaises(Exception) as e:
-            validate_input_source(layer, filename, files, action_type="append")
-        expected = (
-            "Some error occurred while trying to access the uploaded schema: "
-            "Please ensure the name is consistent with the file you are trying to append."
-        )
-        self.assertEqual(expected, e.exception.args[0])
-
-    @patch("geonode.layers.utils.gs_catalog")
-    def test_will_raise_exception_for_not_existing_dataset_in_the_catalog(self, catalog):
-        catalog.get_layer.return_value = None
-        create_single_dataset("san_andres_y_providencia_water")
-        layer = Dataset.objects.get(name="san_andres_y_providencia_water")
-        file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
-        files = {
-            "shp": filename,
-            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
-            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
-            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
-        }
-        with self.assertRaises(Exception) as e:
-            validate_input_source(layer, filename, files, action_type="append")
-        expected = (
-            "Some error occurred while trying to access the uploaded schema: "
-            "The selected Dataset does not exists in the catalog."
-        )
-        self.assertEqual(expected, e.exception.args[0])
-
-    @patch("geonode.layers.utils.gs_catalog")
-    def test_will_raise_exception_if_schema_is_not_equal_between_catalog_and_file(self, catalog):
-        attr = namedtuple("GSCatalogAttr", ["attributes"])
-        attr.attributes = []
-        self.r.resource = attr
-        catalog.get_layer.return_value = self.r
-        create_single_dataset("san_andres_y_providencia_water")
-        layer = Dataset.objects.filter(name="san_andres_y_providencia_water")[0]
-        file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
-        files = {
-            "shp": filename,
-            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
-            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
-            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
-        }
-        with self.assertRaises(Exception) as e:
-            validate_input_source(layer, filename, files, action_type="append")
-        expected = (
-            "Some error occurred while trying to access the uploaded schema: "
-            "Please ensure that the dataset structure is consistent with the file you are trying to append."
-        )
-        self.assertEqual(expected, e.exception.args[0])
-
-    @patch("geonode.layers.utils.gs_catalog")
-    def test_validation_will_pass_for_valid_append(self, catalog):
-        attr = namedtuple("GSCatalogAttr", ["attributes"])
-        attr.attributes = ["NATURAL", "NAME"]
-        self.r.resource = attr
-        catalog.get_layer.return_value = self.r
-        create_single_dataset("san_andres_y_providencia_water")
-        layer = Dataset.objects.filter(name="san_andres_y_providencia_water")[0]
-        file_path = gisdata.VECTOR_DATA
-        filename = os.path.join(file_path, "san_andres_y_providencia_water.shp")
-        files = {
-            "shp": filename,
-            "dbf": f"{file_path}/san_andres_y_providencia_water.sbf",
-            "prj": f"{file_path}/san_andres_y_providencia_water.prj",
-            "shx": f"{file_path}/san_andres_y_providencia_water.shx",
-        }
-        actual = validate_input_source(layer, filename, files, action_type="append")
-        self.assertTrue(actual)
-
     def test_dataset_download_not_found_for_non_existing_dataset(self):
         self.client.login(username="admin", password="admin")
         url = reverse("dataset_download", args=["foo-dataset"])
@@ -1210,7 +836,7 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         self.assertEqual(500, response.status_code)
         self.assertDictEqual({"error": "The format provided is not valid for the selected resource"}, response.json())
 
-    @patch("geonode.layers.views.HttpClient.request")
+    @patch("geonode.layers.download_handler.HttpClient.request")
     def test_dataset_download_call_the_catalog_raise_error_for_no_200(self, mocked_catalog):
         _response = MagicMock(status_code=500, content="foo-bar")
         mocked_catalog.return_value = _response, "foo-bar"
@@ -1220,12 +846,9 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         url = reverse("dataset_download", args=[dataset.alternate])
         response = self.client.get(url)
         self.assertEqual(500, response.status_code)
-        self.assertDictEqual(
-            {"error": "Download dataset exception: error during call with GeoServer: foo-bar"}, response.json()
-        )
+        self.assertDictEqual({"error": "Download dataset exception: error during call with GeoServer"}, response.json())
 
-    @patch("geonode.layers.views.HttpClient.request")
-    def test_dataset_download_call_the_catalog_raise_error_for_error_content(self, mocked_catalog):
+    def test_dataset_download_call_the_catalog_raise_error_for_error_content(self):
         content = """<?xml version="1.0" encoding="UTF-8"?>
                 <ows:ExceptionReport xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:ows="http://www.opengis.net/ows/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.1.0" xsi:schemaLocation="http://www.opengis.net/ows/1.1 http://localhost:8080/geoserver/schemas/ows/1.1.0/owsAll.xsd">
                     <ows:Exception exceptionCode="InvalidParameterValue" locator="ResponseDocument">
@@ -1234,14 +857,15 @@ class DatasetsTest(GeoNodeBaseTestSupport):
                 </ows:ExceptionReport>
                 """  # noqa
         _response = MagicMock(status_code=200, text=content, headers={"Content-Type": "text/xml"})
-        mocked_catalog.return_value = _response, content
         # if settings.USE_GEOSERVER is false, the URL must be redirected
         self.client.login(username="admin", password="admin")
         dataset = Dataset.objects.first()
-        url = reverse("dataset_download", args=[dataset.alternate])
-        response = self.client.get(url)
-        self.assertEqual(500, response.status_code)
-        self.assertDictEqual({"error": "InvalidParameterValue: Foo Bar Exception"}, response.json())
+        with patch("geonode.layers.download_handler.HttpClient.request") as mocked_catalog:
+            mocked_catalog.return_value = _response, content
+            url = reverse("dataset_download", args=[dataset.alternate])
+            response = self.client.get(url)
+            self.assertEqual(500, response.status_code)
+            self.assertDictEqual({"error": "InvalidParameterValue: Foo Bar Exception"}, response.json())
 
     def test_dataset_download_call_the_catalog_works(self):
         # if settings.USE_GEOSERVER is false, the URL must be redirected
@@ -1249,7 +873,7 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         self.client.login(username="admin", password="admin")
         dataset = Dataset.objects.first()
         layer = create_dataset(dataset.title, dataset.title, dataset.owner, "Point")
-        with patch("geonode.layers.views.HttpClient.request") as mocked_catalog:
+        with patch("geonode.layers.download_handler.HttpClient.request") as mocked_catalog:
             mocked_catalog.return_value = _response, ""
             url = reverse("dataset_download", args=[layer.alternate])
             response = self.client.get(url)
@@ -1268,21 +892,21 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         _response = MagicMock(status_code=200, text="", headers={"Content-Type": ""})  # noqa
         dataset = Dataset.objects.first()
         layer = create_dataset(dataset.title, dataset.title, dataset.owner, "Point")
-        with patch("geonode.layers.views.HttpClient.request") as mocked_catalog:
+        with patch("geonode.layers.download_handler.HttpClient.request") as mocked_catalog:
             mocked_catalog.return_value = _response, ""
             url = reverse("dataset_download", args=[layer.alternate])
             response = self.client.get(url)
             self.assertTrue(response.status_code == 200)
 
     @override_settings(USE_GEOSERVER=True)
-    @patch("geonode.layers.views.get_template")
+    @patch("geonode.layers.download_handler.get_template")
     def test_dataset_download_call_the_catalog_work_for_raster(self, pathed_template):
         # if settings.USE_GEOSERVER is false, the URL must be redirected
         _response = MagicMock(status_code=200, text="", headers={"Content-Type": ""})  # noqa
         dataset = Dataset.objects.filter(subtype="raster").first()
         layer = create_dataset(dataset.title, dataset.title, dataset.owner, "Point")
         Dataset.objects.filter(alternate=layer.alternate).update(subtype="raster")
-        with patch("geonode.layers.views.HttpClient.request") as mocked_catalog:
+        with patch("geonode.layers.download_handler.HttpClient.request") as mocked_catalog:
             mocked_catalog.return_value = _response, ""
             url = reverse("dataset_download", args=[layer.alternate])
             response = self.client.get(url)
@@ -1295,13 +919,13 @@ class DatasetsTest(GeoNodeBaseTestSupport):
         )
 
     @override_settings(USE_GEOSERVER=True)
-    @patch("geonode.layers.views.get_template")
+    @patch("geonode.layers.download_handler.get_template")
     def test_dataset_download_call_the_catalog_work_for_vector(self, pathed_template):
         # if settings.USE_GEOSERVER is false, the URL must be redirected
         _response = MagicMock(status_code=200, text="", headers={"Content-Type": ""})  # noqa
         dataset = Dataset.objects.filter(subtype="vector").first()
         layer = create_dataset(dataset.title, dataset.title, dataset.owner, "Point")
-        with patch("geonode.layers.views.HttpClient.request") as mocked_catalog:
+        with patch("geonode.layers.download_handler.HttpClient.request") as mocked_catalog:
             mocked_catalog.return_value = _response, ""
             url = reverse("dataset_download", args=[layer.alternate])
             response = self.client.get(url)
@@ -1534,15 +1158,6 @@ class LayerNotificationsTestCase(NotificationsTestsHelper):
             self.assertTrue(self.check_notification_out("dataset_updated", self.u))
 
             self.clear_notifications_queue()
-            lct = ContentType.objects.get_for_model(_l)
-
-            if "pinax.ratings" in settings.INSTALLED_APPS:
-                self.clear_notifications_queue()
-                from pinax.ratings.models import Rating
-
-                rating = Rating(user=self.norman, content_type=lct, object_id=_l.id, content_object=_l, rating=5)
-                rating.save()
-                self.assertTrue(self.check_notification_out("dataset_rated", self.u))
 
 
 """
@@ -1771,59 +1386,11 @@ def dummy_metadata_parser(exml, uuid, vals, regions, keywords, custom):
     return uuid, vals, regions, keywords, custom
 
 
-class TestIsXmlUploadOnly(TestCase):
-    """
-    This function will check if the files uploaded is a metadata file
-    """
-
-    def setUp(self):
-        self.exml_path = f"{settings.PROJECT_ROOT}/base/fixtures/test_xml.xml"
-        self.request = RequestFactory()
-
-    def test_give_single_file_should_return_True(self):
-        with open(self.exml_path, "rb") as f:
-            request = self.request.post("/random/url")
-            request.FILES["base_file"] = f
-        actual = is_xml_upload_only(request)
-        self.assertTrue(actual)
-
-    def test_give_single_file_should_return_False(self):
-        base_path = gisdata.GOOD_DATA
-        with open(f"{base_path}/vector/single_point.shp", "rb") as f:
-            request = self.request.post("/random/url")
-            request.FILES["base_file"] = f
-        actual = is_xml_upload_only(request)
-        self.assertFalse(actual)
-
-
-class TestIsSldUploadOnly(TestCase):
-    """
-    This function will check if the files uploaded is a metadata file
-    """
-
-    def setUp(self):
-        self.exml_path = f"{settings.PROJECT_ROOT}/base/fixtures/test_sld.sld"
-        self.request = RequestFactory()
-
-    def test_give_single_file_should_return_True(self):
-        with open(self.exml_path, "rb") as f:
-            request = self.request.post("/random/url")
-            request.FILES["base_file"] = f
-        actual = is_sld_upload_only(request)
-        self.assertTrue(actual)
-
-    def test_give_single_file_should_return_False(self):
-        base_path = gisdata.GOOD_DATA
-        with open(f"{base_path}/vector/single_point.shp", "rb") as f:
-            request = self.request.post("/random/url")
-            request.FILES["base_file"] = f
-        actual = is_sld_upload_only(request)
-        self.assertFalse(actual)
-
-
 class TestDatasetForm(GeoNodeBaseTestSupport):
     def setUp(self) -> None:
         self.user = get_user_model().objects.get(username="admin")
+        self.user2 = get_user_model().objects.get_or_create(username="svenzwei")
+
         self.dataset = create_single_dataset("my_single_layer", owner=self.user)
         self.sut = DatasetForm
         self.time_form = DatasetTimeSerieForm
@@ -2043,6 +1610,44 @@ class TestDatasetForm(GeoNodeBaseTestSupport):
             form.errors["presentation"][0],
         )
 
+    def test_resource_form_is_valid_single_user_contact_role(self):
+        """test if passing a single user to a contact role form is working"""
+        users = get_user_model().objects.filter(username="svenzwei")
+        cr = Roles.get_multivalue_ones()[0]
+        form = self.sut(
+            instance=self.dataset,
+            data={
+                "owner": self.dataset.owner.id,
+                cr.name: [u.username for u in users],
+                "title": "layer_title",
+                "date": "2022-01-24 16:38 pm",
+                "date_type": "creation",
+                "language": "eng",
+                "extra_metadata": '[{"id": 1, "filter_header": "object", "field_name": "object", "field_label": "object", "field_value": "object"}]',
+            },
+        )
+        self.assertTrue(form.is_valid())
+        self.assertEqual(list(form.cleaned_data[cr.name]), list(users))
+
+    def test_resource_form_is_valid_multiple_user_contact_role_as_queryset(self):
+        """test if passing a multiple user to a contact role form is working"""
+        users = get_user_model().objects.filter(username__in=["svenzwei", "admin"])
+        for cr in Roles.get_multivalue_ones():
+            form = self.sut(
+                instance=self.dataset,
+                data={
+                    "owner": self.dataset.owner.id,
+                    cr.name: [u.username for u in users],
+                    "title": "layer_title",
+                    "date": "2022-01-24 16:38 pm",
+                    "date_type": "creation",
+                    "language": "eng",
+                    "extra_metadata": '[{"id": 1, "filter_header": "object", "field_name": "object", "field_label": "object", "field_value": "object"}]',
+                },
+            )
+            self.assertTrue(form.is_valid())
+            self.assertEqual(list(form.cleaned_data[cr.name]), list(users))
+
     def test_resource_form_is_invalid_with_incompleted_timeserie_data(self):
         self.client.login(username="admin", password="admin")
         url = reverse("dataset_metadata", args=(self.dataset.alternate,))
@@ -2221,3 +1826,54 @@ class SetLayersPermissionsCommand(GeoNodeBaseTestSupport):
             self.assertSetEqual(expected_perms, actual)
         else:
             self.assertFalse(username in [user.username for user in perms["users"]])
+
+
+class TestDatasetDownloadHandler(GeoNodeBaseTestSupport):
+    def setUp(self):
+        user = get_user_model().objects.first()
+        request = RequestFactory().get("http://test_url.com")
+        request.user = user
+        self.dataset = create_single_dataset("test_dataset_for_download")
+        self.sut = DatasetDownloadHandler(request, self.dataset.alternate)
+
+    def test_download_url_without_original_link(self):
+        expected_url = reverse("dataset_download", args=[self.dataset.alternate])
+        self.assertEqual(expected_url, self.sut.download_url)
+
+    def test_download_url_with_original_link(self):
+        Link.objects.update_or_create(
+            resource=self.dataset.resourcebase_ptr,
+            url="https://custom_dowonload_url.com",
+            defaults=dict(
+                extension="zip",
+                name="Original Dataset",
+                mime="application/octet-stream",
+                link_type="original",
+            ),
+        )
+        expected_url = "https://custom_dowonload_url.com"
+        self.assertEqual(expected_url, self.sut.download_url)
+
+    def test_get_resource_exists(self):
+        self.assertIsNotNone(self.sut.get_resource())
+
+    def test_process_dowload(self):
+        response = self.sut.get_download_response()
+        self.assertIsNotNone(response)
+
+
+class DummyDownloadHandler(DatasetDownloadHandler):
+    def get_download_response(self):
+        return HttpResponse(content=b"abcsfd2")
+
+
+class TestCustomDownloadHandler(GeoNodeBaseTestSupport):
+    @override_settings(DEFAULT_DATASET_DOWNLOAD_HANDLER="geonode.layers.tests.DummyDownloadHandler")
+    def test_download_custom_handler(self):
+        clear_dataset_download_handlers()
+        dataset = create_single_dataset("test_custom_download_dataset")
+        url = reverse("dataset_download", args=[dataset.alternate])
+        self.client.login(username="admin", password="admin")
+        response = self.client.get(url)
+        self.assertTrue(response.status_code == 200)
+        self.assertEqual(response.content, b"abcsfd2")

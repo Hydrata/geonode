@@ -20,9 +20,11 @@ import re
 import html
 import json
 import logging
+
 from django.db.models.query import QuerySet
 from bootstrap3_datetime.widgets import DateTimePicker
 from dal import autocomplete
+import dal.forward
 from django import forms
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -32,10 +34,10 @@ from django.db.models import Prefetch, Q
 from django.forms import models
 from django.forms.fields import ChoiceField, MultipleChoiceField
 from django.forms.utils import flatatt
-from django.utils.encoding import force_text
+from django.utils.encoding import force_str
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext_lazy as _
 from modeltranslation.forms import TranslationModelForm
 from taggit.forms import TagField
 from tinymce.widgets import TinyMCE
@@ -46,6 +48,7 @@ from geonode.base.enumerations import ALL_LANGUAGES
 from geonode.base.models import (
     HierarchicalKeyword,
     License,
+    LinkedResource,
     Region,
     ResourceBase,
     Thesaurus,
@@ -54,11 +57,12 @@ from geonode.base.models import (
     ThesaurusLabel,
     TopicCategory,
 )
-from geonode.base.widgets import TaggitSelect2Custom
+from geonode.base.widgets import TaggitSelect2Custom, TaggitProfileSelect2Custom
 from geonode.base.fields import MultiThesauriField
 from geonode.documents.models import Document
 from geonode.layers.models import Dataset
 from geonode.base.utils import validate_extra_metadata, remove_country_from_languagecode
+from geonode.people import Roles
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +151,7 @@ class RegionsSelect(forms.Select):
     def render_option_value(self, selected_choices, option_value, option_label, data_section=None):
         if option_value is None:
             option_value = ""
-        option_value = force_text(option_value)
+        option_value = force_str(option_value)
         if option_value in selected_choices:
             selected_html = mark_safe(" selected")
             if not self.allow_multiple_selected:
@@ -156,12 +160,12 @@ class RegionsSelect(forms.Select):
         else:
             selected_html = ""
 
-        label = force_text(option_label)
+        label = force_str(option_label)
 
         if data_section is None:
             data_section = ""
         else:
-            data_section = force_text(data_section)
+            data_section = force_str(data_section)
             if "/" in data_section:
                 label = format_html("{} [{}]", label, data_section.rsplit("/", 1)[1])
 
@@ -177,7 +181,7 @@ class RegionsSelect(forms.Select):
             else:
                 return choice.id
 
-        selected_choices = {force_text(_region_id_from_choice(v)) for v in selected_choices}
+        selected_choices = {force_str(_region_id_from_choice(v)) for v in selected_choices}
         output = []
 
         output.append(format_html('<optgroup label="{}">', "Global"))
@@ -188,25 +192,25 @@ class RegionsSelect(forms.Select):
 
         for option_value, option_label in self.choices:
             if isinstance(option_label, (list, tuple)) and not isinstance(option_label, str):
-                output.append(format_html('<optgroup label="{}">', force_text(option_value)))
+                output.append(format_html('<optgroup label="{}">', force_str(option_value)))
                 for option in option_label:
                     if isinstance(option, (list, tuple)) and not isinstance(option, str):
                         if isinstance(option[1][0], (list, tuple)) and not isinstance(option[1][0], str):
                             for option_child in option[1][0]:
                                 output.append(
                                     self.render_option_value(
-                                        selected_choices, *option_child, data_section=force_text(option[1][0][0])
+                                        selected_choices, *option_child, data_section=force_str(option[1][0][0])
                                     )
                                 )
                         else:
                             output.append(
                                 self.render_option_value(
-                                    selected_choices, *option[1], data_section=force_text(option[0])
+                                    selected_choices, *option[1], data_section=force_str(option[0])
                                 )
                             )
                     else:
                         output.append(
-                            self.render_option_value(selected_choices, *option, data_section=force_text(option_value))
+                            self.render_option_value(selected_choices, *option, data_section=force_str(option_value))
                         )
                 output.append("</optgroup>")
 
@@ -345,6 +349,58 @@ class ThesaurusAvailableForm(forms.Form):
         return tname.first()
 
 
+class ContactRoleMultipleChoiceField(forms.ModelMultipleChoiceField):
+    def clean(self, value) -> QuerySet:
+        try:
+            users = get_user_model().objects.filter(username__in=value)
+        except TypeError:
+            # value of not supported type ...
+            raise forms.ValidationError(_("Something went wrong in finding the profile(s) in a contact role form ..."))
+        return users
+
+
+class LinkedResourceForm(forms.ModelForm):
+    linked_resources = forms.ModelMultipleChoiceField(
+        label=_("Related resources"),
+        required=False,
+        queryset=None,
+        widget=autocomplete.ModelSelect2Multiple(url="autocomplete_linked_resource"),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # this is used to automatically validate the POSTed back values
+        self.fields["linked_resources"].queryset = ResourceBase.objects.exclude(pk=self.instance.id)
+        # these are the LinkedResource already linked to this resource
+        self.fields["linked_resources"].initial = LinkedResource.get_target_ids(self.instance).all()
+        # this is used by the autocomplete view to exclude current resource
+        self.fields["linked_resources"].widget.forward.append(
+            dal.forward.Const(
+                self.instance.id,
+                "exclude",
+            )
+        )
+
+    class Meta:
+        model = ResourceBase
+        fields = ["linked_resources"]
+
+    def save_linked_resources(self, links_field="linked_resources"):
+        # create and fetch desired links
+        target_ids = []
+        for res in self.cleaned_data[links_field]:
+            LinkedResource.objects.get_or_create(source=self.instance, target=res, internal=False)
+            target_ids.append(res.pk)
+
+        # delete remaining links
+        (
+            LinkedResource.objects.filter(source_id=self.instance.id, internal=False)
+            .exclude(target_id__in=target_ids)
+            .delete()
+        )
+
+
 class ResourceBaseDateTimePicker(DateTimePicker):
     def build_attrs(self, base_attrs=None, extra_attrs=None, **kwargs):
         "Helper function for building an attribute dictionary."
@@ -355,8 +411,7 @@ class ResourceBaseDateTimePicker(DateTimePicker):
         # return base_attrs
 
 
-class ResourceBaseForm(TranslationModelForm):
-
+class ResourceBaseForm(TranslationModelForm, LinkedResourceForm):
     """Base form for metadata, should be inherited by childres classes of ResourceBase"""
 
     abstract = forms.CharField(label=_("Abstract"), required=False, widget=TinyMCE())
@@ -373,8 +428,8 @@ class ResourceBaseForm(TranslationModelForm):
     data_quality_statement = forms.CharField(label=_("Data quality statement"), required=False, widget=TinyMCE())
 
     owner = forms.ModelChoiceField(
-        empty_label=_("Owner"),
-        label=_("Owner"),
+        empty_label=_(Roles.OWNER.label),
+        label=_(Roles.OWNER.label),
         required=True,
         queryset=get_user_model().objects.exclude(username="AnonymousUser"),
         widget=autocomplete.ModelSelect2(url="autocomplete_profile"),
@@ -403,20 +458,74 @@ class ResourceBaseForm(TranslationModelForm):
         widget=ResourceBaseDateTimePicker(options={"format": "YYYY-MM-DD HH:mm a"}),
     )
 
-    poc = forms.ModelChoiceField(
-        empty_label=_("Person outside GeoNode (fill form)"),
-        label=_("Point of Contact"),
-        required=False,
+    metadata_author = ContactRoleMultipleChoiceField(
+        label=_(Roles.METADATA_AUTHOR.label),
+        required=Roles.METADATA_AUTHOR.is_required,
         queryset=get_user_model().objects.exclude(username="AnonymousUser"),
-        widget=autocomplete.ModelSelect2(url="autocomplete_profile"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
     )
 
-    metadata_author = forms.ModelChoiceField(
-        empty_label=_("Person outside GeoNode (fill form)"),
-        label=_("Metadata Author"),
-        required=False,
+    processor = ContactRoleMultipleChoiceField(
+        label=_(Roles.PROCESSOR.label),
+        required=Roles.PROCESSOR.is_required,
         queryset=get_user_model().objects.exclude(username="AnonymousUser"),
-        widget=autocomplete.ModelSelect2(url="autocomplete_profile"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    publisher = ContactRoleMultipleChoiceField(
+        label=_(Roles.PUBLISHER.label),
+        required=Roles.PUBLISHER.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    custodian = ContactRoleMultipleChoiceField(
+        label=_(Roles.CUSTODIAN.label),
+        required=Roles.CUSTODIAN.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    poc = ContactRoleMultipleChoiceField(
+        label=_(Roles.POC.label),
+        required=Roles.POC.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    distributor = ContactRoleMultipleChoiceField(
+        label=_(Roles.DISTRIBUTOR.label),
+        required=Roles.DISTRIBUTOR.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    resource_user = ContactRoleMultipleChoiceField(
+        label=_(Roles.RESOURCE_USER.label),
+        required=Roles.RESOURCE_USER.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    resource_provider = ContactRoleMultipleChoiceField(
+        label=_(Roles.RESOURCE_PROVIDER.label),
+        required=Roles.RESOURCE_PROVIDER.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    originator = ContactRoleMultipleChoiceField(
+        label=_(Roles.ORIGINATOR.label),
+        required=Roles.ORIGINATOR.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
+    )
+
+    principal_investigator = ContactRoleMultipleChoiceField(
+        label=_(Roles.PRINCIPAL_INVESTIGATOR.label),
+        required=Roles.PRINCIPAL_INVESTIGATOR.is_required,
+        queryset=get_user_model().objects.exclude(username="AnonymousUser"),
+        widget=TaggitProfileSelect2Custom(url="autocomplete_profile"),
     )
 
     keywords = TagField(
@@ -467,7 +576,7 @@ class ResourceBaseForm(TranslationModelForm):
                     }
                 )
 
-            if field in ["poc", "owner"] and not self.can_change_perms:
+            if field in ["owner"] and not self.can_change_perms:
                 self.fields[field].disabled = True
 
     def disable_keywords_widget_for_non_superuser(self, user):

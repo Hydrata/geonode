@@ -17,14 +17,12 @@
 #
 #########################################################################
 
-import itertools
 import os
 import gc
 import re
 import json
 import time
 import base64
-import ntpath
 import select
 import shutil
 import string
@@ -35,6 +33,7 @@ import datetime
 import requests
 import tempfile
 import ipaddress
+import itertools
 import traceback
 import subprocess
 
@@ -52,12 +51,11 @@ from collections import namedtuple, defaultdict
 from rest_framework.exceptions import APIException
 from math import atan, exp, log, pi, sin, tan, floor
 from zipfile import ZipFile, is_zipfile, ZIP_DEFLATED
-from pathvalidate import ValidationError, validate_filepath, validate_filename
 from geonode.upload.api.exceptions import GeneralUploadException
 
 from django.conf import settings
 from django.db.models import signals
-from django.utils.http import is_safe_url
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.apps import apps as django_apps
 from django.middleware.csrf import get_token
 from django.http import HttpResponse
@@ -68,7 +66,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models, connection, transaction
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from geonode import geoserver, GeoNodeException  # noqa
 from geonode.compat import ensure_string
@@ -137,7 +135,6 @@ class ServerDoesNotExist(Exception):
 
 
 class OGC_Server(object):  # LGTM: @property will not work in old-style classes
-
     """
     OGC Server object.
     """
@@ -211,7 +208,6 @@ class OGC_Server(object):  # LGTM: @property will not work in old-style classes
 
 
 class OGC_Servers_Handler:
-
     """
     OGC Server Settings Convenience dict.
     """
@@ -387,7 +383,9 @@ def get_headers(request, url, raw_url, allowed_hosts=[]):
     for _header_key, _header_value in dict(request.headers.copy()).items():
         if _header_key.lower() in FORWARDED_HEADERS:
             headers[_header_key] = _header_value
-    if settings.SESSION_COOKIE_NAME in request.COOKIES and is_safe_url(url=raw_url, allowed_hosts=url.hostname):
+    if settings.SESSION_COOKIE_NAME in request.COOKIES and url_has_allowed_host_and_scheme(
+        url=raw_url, allowed_hosts=url.hostname
+    ):
         cookies = request.META["HTTP_COOKIE"]
 
     for cook in request.COOKIES:
@@ -494,13 +492,54 @@ def _split_query(query):
     return [kw.strip() for kw in keywords if kw.strip()]
 
 
+# Swaps coords order from xmin,ymin,xmax,ymax to xmin,xmax,ymin,ymax and viceversa
+def bbox_swap(bbox):
+    _bbox = [float(o) for o in bbox]
+    return [_bbox[0], _bbox[2], _bbox[1], _bbox[3]]
+
+
 def bbox_to_wkt(x0, x1, y0, y1, srid="4326", include_srid=True):
     if srid and str(srid).startswith("EPSG:"):
         srid = srid[5:]
     if None not in {x0, x1, y0, y1}:
-        wkt = "POLYGON(({:f} {:f},{:f} {:f},{:f} {:f},{:f} {:f},{:f} {:f}))".format(
-            float(x0), float(y0), float(x0), float(y1), float(x1), float(y1), float(x1), float(y0), float(x0), float(y0)
+        polys = []
+
+        # We assume that if x1 is smaller then x0 we're crossing the date line
+        crossing_idl = x1 < x0
+        if crossing_idl:
+            polys.append(
+                [
+                    (float(x0), float(y0)),
+                    (float(x0), float(y1)),
+                    (180.0, float(y1)),
+                    (180.0, float(y0)),
+                    (float(x0), float(y0)),
+                ]
+            )
+            polys.append(
+                [
+                    (-180.0, float(y0)),
+                    (-180.0, float(y1)),
+                    (float(x1), float(y1)),
+                    (float(x1), float(y0)),
+                    (-180.0, float(y0)),
+                ]
+            )
+        else:
+            polys.append(
+                [
+                    (float(x0), float(y0)),
+                    (float(x0), float(y1)),
+                    (float(x1), float(y1)),
+                    (float(x1), float(y0)),
+                    (float(x0), float(y0)),
+                ]
+            )
+
+        poly_wkts = ",".join(
+            ["(({}))".format(",".join(["{:f} {:f}".format(coords[0], coords[1]) for coords in poly])) for poly in polys]
         )
+        wkt = f"MULTIPOLYGON({poly_wkts})" if len(polys) > 1 else f"POLYGON{poly_wkts}"
         if include_srid:
             wkt = f"SRID={srid};{wkt}"
     else:
@@ -1377,10 +1416,7 @@ def get_legend_url(
 
 def set_resource_default_links(instance, layer, prune=False, **kwargs):
     from geonode.base.models import Link
-    from django.urls import reverse
-    from django.utils.translation import ugettext
-    from geonode.layers.models import Dataset
-    from geonode.documents.models import Document
+    from django.utils.translation import gettext_lazy
 
     # Prune old links
     if prune:
@@ -1447,32 +1483,6 @@ def set_resource_default_links(instance, layer, prune=False, **kwargs):
                 logger.exception(e)
                 bbox = instance.bbox_string
 
-        # Create Raw Data download link
-        if settings.DISPLAY_ORIGINAL_DATASET_LINK:
-            logger.debug(" -- Resource Links[Create Raw Data download link]...")
-            if isinstance(instance, Dataset):
-                download_url = build_absolute_uri(reverse("dataset_download", args=(instance.alternate,)))
-            elif isinstance(instance, Document):
-                download_url = build_absolute_uri(reverse("document_download", args=(instance.id,)))
-            else:
-                download_url = None
-
-            while Link.objects.filter(resource=instance.resourcebase_ptr, link_type="original").exists():
-                Link.objects.filter(resource=instance.resourcebase_ptr, link_type="original").delete()
-            Link.objects.update_or_create(
-                resource=instance.resourcebase_ptr,
-                url=download_url,
-                defaults=dict(
-                    extension="zip",
-                    name="Original Dataset",
-                    mime="application/octet-stream",
-                    link_type="original",
-                ),
-            )
-            logger.debug(" -- Resource Links[Create Raw Data download link]...done!")
-        else:
-            Link.objects.filter(resource=instance.resourcebase_ptr, name="Original Dataset").delete()
-
         # Set download links for WMS, WCS or WFS and KML
         logger.debug(" -- Resource Links[Set download links for WMS, WCS or WFS and KML]...")
         instance_ows_url = f"{instance.ows_url}?" if instance.ows_url else f"{ogc_server_settings.public_url}ows?"
@@ -1482,7 +1492,7 @@ def set_resource_default_links(instance, layer, prune=False, **kwargs):
             try:
                 Link.objects.update_or_create(
                     resource=instance.resourcebase_ptr,
-                    name=ugettext(name),
+                    name=gettext_lazy(name),
                     defaults=dict(
                         extension=ext,
                         url=wms_url,
@@ -1492,9 +1502,9 @@ def set_resource_default_links(instance, layer, prune=False, **kwargs):
                 )
             except Link.MultipleObjectsReturned:
                 _d = dict(extension=ext, url=wms_url, mime=mime, link_type="image")
-                Link.objects.filter(resource=instance.resourcebase_ptr, name=ugettext(name), link_type="image").update(
-                    **_d
-                )
+                Link.objects.filter(
+                    resource=instance.resourcebase_ptr, name=gettext_lazy(name), link_type="image"
+                ).update(**_d)
 
         if instance.subtype == "vector":
             links = wfs_links(
@@ -1966,28 +1976,25 @@ def get_supported_datasets_file_types():
             supported_types[default_types_id.index(_type.get("id"))] = _type
         else:
             supported_types.extend([_type])
-    return supported_types
+
+    # Order the formats (to support their visualization)
+    formats_order = [("vector", 0), ("raster", 1), ("archive", 2)]
+    ordered_payload = (
+        (weight[1], resource_type)
+        for resource_type in supported_types
+        for weight in formats_order
+        if resource_type.get("format") in weight[0]
+    )
+
+    # Flatten the list
+    ordered_resource_types = [x[1] for x in sorted(ordered_payload, key=lambda x: x[0])]
+    other_resource_types = [
+        resource_type
+        for resource_type in supported_types
+        if resource_type.get("format") is None or resource_type.get("format") not in [f[0] for f in formats_order]
+    ]
+    return ordered_resource_types + other_resource_types
 
 
 def get_allowed_extensions():
     return list(itertools.chain.from_iterable([_type["ext"] for _type in get_supported_datasets_file_types()]))
-
-
-def safe_path_leaf(path):
-    """A view that is not vulnerable to malicious file access."""
-    base_path = settings.MEDIA_ROOT
-    try:
-        validate_filepath(path, platform="auto")
-        head, tail = ntpath.split(path)
-        filename = tail or ntpath.basename(head)
-        validate_filename(filename, platform="auto")
-    except ValidationError as e:
-        logger.error(f"{e}")
-        raise e
-    # GOOD -- Verify with normalised version of path
-    fullpath = os.path.normpath(os.path.join(head, filename))
-    if not fullpath.startswith(base_path) or path != fullpath:
-        raise GeoNodeException(
-            f"The provided path '{path}' is not safe. The file is outside the MEDIA_ROOT '{base_path}' base path!"
-        )
-    return fullpath

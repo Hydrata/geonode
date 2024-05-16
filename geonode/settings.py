@@ -26,7 +26,6 @@ import subprocess
 import dj_database_url
 from schema import Optional
 from datetime import timedelta
-from distutils.util import strtobool  # noqa
 from urllib.parse import urlparse, urljoin
 
 #
@@ -372,7 +371,7 @@ WHITENOISE_MANIFEST_STRICT = ast.literal_eval(os.getenv("WHITENOISE_MANIFEST_STR
 COMPRESS_STATIC_FILES = ast.literal_eval(os.getenv("COMPRESS_STATIC_FILES", "False"))
 
 MEMCACHED_ENABLED = ast.literal_eval(os.getenv("MEMCACHED_ENABLED", "False"))
-MEMCACHED_BACKEND = os.getenv("MEMCACHED_BACKEND", "django.core.cache.backends.memcached.PyMemcacheCache")
+MEMCACHED_BACKEND = os.getenv("MEMCACHED_BACKEND", "django.core.cache.backends.memcached.PyLibMCCache")
 MEMCACHED_LOCATION = os.getenv("MEMCACHED_LOCATION", "127.0.0.1:11211")
 MEMCACHED_LOCK_EXPIRE = int(os.getenv("MEMCACHED_LOCK_EXPIRE", 3600))
 MEMCACHED_LOCK_TIMEOUT = int(os.getenv("MEMCACHED_LOCK_TIMEOUT", 10))
@@ -488,7 +487,6 @@ INSTALLED_APPS = (
     "django_forms_bootstrap",
     # Social
     "avatar",
-    "pinax.ratings",
     "announcements",
     "actstream",
     "user_messages",
@@ -551,6 +549,11 @@ REST_API_DEFAULT_PAGE = os.getenv("REST_API_DEFAULT_PAGE", 1)
 REST_API_DEFAULT_PAGE_SIZE = os.getenv("REST_API_DEFAULT_PAGE_SIZE", 10)
 REST_API_DEFAULT_PAGE_QUERY_PARAM = os.getenv("REST_API_DEFAULT_PAGE_QUERY_PARAM", "page_size")
 
+REST_API_PRESETS = {
+    "bare": {"exclude[]": ["*"], "include[]": ["pk", "title"]},
+    "basic": {"exclude[]": ["*"], "include[]": ["pk", "title", "abstract", "resource_type"]},
+}
+
 DYNAMIC_REST = {
     # DEBUG: enable/disable internal debugging
     "DEBUG": False,
@@ -598,6 +601,7 @@ except ValueError:
     ALLOWED_DOCUMENT_TYPES = (
         [
             "txt",
+            "csv",
             "log",
             "doc",
             "docx",
@@ -653,6 +657,7 @@ except ValueError:
             "glb",
             "pcd",
             "gltf",
+            "ifc",
         ]
         if os.getenv("ALLOWED_DOCUMENT_TYPES") is None
         else re.split(r" *[,|:;] *", os.getenv("ALLOWED_DOCUMENT_TYPES"))
@@ -794,9 +799,17 @@ TEMPLATES = [
     },
 ]
 
+OPTIONS = {
+    "libraries": {
+        "contact_roles": "geonode.layers.templatetags.contact_roles",
+    },
+}
+
+
 MIDDLEWARE = (
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.contrib.sites.middleware.CurrentSiteMiddleware",
@@ -1004,9 +1017,12 @@ GEOSERVER_PUBLIC_LOCATION = os.getenv("GEOSERVER_PUBLIC_LOCATION", _default_publ
 
 GEOSERVER_WEB_UI_LOCATION = os.getenv("GEOSERVER_WEB_UI_LOCATION", GEOSERVER_PUBLIC_LOCATION)
 
-OGC_SERVER_DEFAULT_USER = os.getenv("GEOSERVER_ADMIN_USER", "admin")
+GEOSERVER_ADMIN_USER = os.getenv("GEOSERVER_ADMIN_USER", "admin")
 
-OGC_SERVER_DEFAULT_PASSWORD = os.getenv("GEOSERVER_ADMIN_PASSWORD", "geoserver")
+GEOSERVER_ADMIN_PASSWORD = os.getenv("GEOSERVER_ADMIN_PASSWORD", "geoserver")
+
+# This is the password from Geoserver factory data-dir. It's only used at install time to perform the very first configurfation of GEOSERVER_ADMIN_PASSWORD
+GEOSERVER_FACTORY_PASSWORD = os.getenv("GEOSERVER_FACTORY_PASSWORD", "geoserver")
 
 GEOFENCE_SECURITY_ENABLED = (
     False if TEST and not INTEGRATION else ast.literal_eval(os.getenv("GEOFENCE_SECURITY_ENABLED", "True"))
@@ -1025,8 +1041,8 @@ OGC_SERVER = {
         # the proxy won't work and the integration tests will fail
         # the entire block has to be overridden in the local_settings
         "PUBLIC_LOCATION": GEOSERVER_PUBLIC_LOCATION,
-        "USER": OGC_SERVER_DEFAULT_USER,
-        "PASSWORD": OGC_SERVER_DEFAULT_PASSWORD,
+        "USER": GEOSERVER_ADMIN_USER,
+        "PASSWORD": GEOSERVER_ADMIN_PASSWORD,
         "MAPFISH_PRINT_ENABLED": ast.literal_eval(os.getenv("MAPFISH_PRINT_ENABLED", "True")),
         "PRINT_NG_ENABLED": ast.literal_eval(os.getenv("PRINT_NG_ENABLED", "True")),
         "GEONODE_SECURITY_ENABLED": ast.literal_eval(os.getenv("GEONODE_SECURITY_ENABLED", "True")),
@@ -1276,30 +1292,8 @@ except ValueError:
 # The proxy to use when making cross origin requests.
 PROXY_URL = os.environ.get("PROXY_URL", "/proxy/?url=")
 
-# Haystack Search Backend Configuration. To enable,
-# first install the following:
-# - pip install django-haystack
-# - pip install pyelasticsearch
-# Set HAYSTACK_SEARCH to True
-# Run "python manage.py rebuild_index"
-HAYSTACK_SEARCH = ast.literal_eval(os.getenv("HAYSTACK_SEARCH", "False"))
 # Avoid permissions prefiltering
 SKIP_PERMS_FILTER = ast.literal_eval(os.getenv("SKIP_PERMS_FILTER", "False"))
-# Update facet counts from Haystack
-HAYSTACK_FACET_COUNTS = ast.literal_eval(os.getenv("HAYSTACK_FACET_COUNTS", "True"))
-if HAYSTACK_SEARCH:
-    if "haystack" not in INSTALLED_APPS:
-        INSTALLED_APPS += ("haystack",)
-    HAYSTACK_CONNECTIONS = {
-        "default": {
-            "ENGINE": "haystack.backends.elasticsearch2_backend.Elasticsearch2SearchEngine",
-            "URL": os.getenv("HAYSTACK_ENGINE_URL", "http://127.0.0.1:9200/"),
-            "INDEX_NAME": os.getenv("HAYSTACK_ENGINE_INDEX_NAME", "haystack"),
-        },
-    }
-    HAYSTACK_SIGNAL_PROCESSOR = "haystack.signals.RealtimeSignalProcessor"
-    HAYSTACK_SEARCH_RESULTS_PER_PAGE = int(os.getenv("HAYSTACK_SEARCH_RESULTS_PER_PAGE", "200"))
-
 # Available download formats
 DOWNLOAD_FORMATS_METADATA = [
     "Atom",
@@ -1338,9 +1332,6 @@ DOWNLOAD_FORMATS_RASTER = [
     "GZIP",
     "Zipped All Files",
 ]
-
-
-DISPLAY_ORIGINAL_DATASET_LINK = ast.literal_eval(os.getenv("DISPLAY_ORIGINAL_DATASET_LINK", "True"))
 
 ACCOUNT_NOTIFY_ON_PASSWORD_CHANGE = ast.literal_eval(os.getenv("ACCOUNT_NOTIFY_ON_PASSWORD_CHANGE", "False"))
 
@@ -1396,8 +1387,8 @@ if CREATE_LAYER:
 RECAPTCHA_ENABLED = ast.literal_eval(os.environ.get("RECAPTCHA_ENABLED", "False"))
 
 if RECAPTCHA_ENABLED:
-    if "captcha" not in INSTALLED_APPS:
-        INSTALLED_APPS += ("captcha",)
+    if "django_recaptcha" not in INSTALLED_APPS:
+        INSTALLED_APPS += ("django_recaptcha",)
     ACCOUNT_SIGNUP_FORM_CLASS = os.getenv(
         "ACCOUNT_SIGNUP_FORM_CLASS", "geonode.people.forms.AllauthReCaptchaSignupForm"
     )
@@ -1427,6 +1418,9 @@ DEFAULT_MAP_CENTER = (
     ast.literal_eval(os.environ.get("DEFAULT_MAP_CENTER_X", "0")),
     ast.literal_eval(os.environ.get("DEFAULT_MAP_CENTER_Y", "0")),
 )
+
+DEFAULT_MAP_CENTER_X = ast.literal_eval(os.environ.get("DEFAULT_MAP_CENTER_X", "0"))
+DEFAULT_MAP_CENTER_Y = ast.literal_eval(os.environ.get("DEFAULT_MAP_CENTER_Y", "0"))
 
 # How tightly zoomed should newly created maps be?
 # 0 = entire world;
@@ -1953,61 +1947,84 @@ ACCOUNT_EMAIL_VERIFICATION = os.environ.get("ACCOUNT_EMAIL_VERIFICATION", "none"
 
 # Since django-allauth 0.43.0.
 ACCOUNT_SIGNUP_REDIRECT_URL = os.environ.get("ACCOUNT_SIGNUP_REDIRECT_URL", os.getenv("SITEURL", _default_siteurl))
-ACCOUNT_LOGIN_ATTEMPTS_LIMIT = int(os.getenv("ACCOUNT_LOGIN_ATTEMPTS_LIMIT", "3"))
+ACCOUNT_RATE_LIMITS = {"login_failed": os.getenv("ACCOUNT_LOGIN_ATTEMPTS_LIMIT", "10/m/ip,5/5m/key")}
 ACCOUNT_MAX_EMAIL_ADDRESSES = int(os.getenv("ACCOUNT_MAX_EMAIL_ADDRESSES", "2"))
 
-SOCIALACCOUNT_ADAPTER = "geonode.people.adapters.SocialAccountAdapter"
 SOCIALACCOUNT_AUTO_SIGNUP = ast.literal_eval(os.environ.get("SOCIALACCOUNT_AUTO_SIGNUP", "True"))
+SOCIALACCOUNT_LOGIN_ON_GET = ast.literal_eval(os.environ.get("SOCIALACCOUNT_LOGIN_ON_GET", "True"))
 # This will hide or show local registration form in allauth view. True will show form
-SOCIALACCOUNT_WITH_GEONODE_LOCAL_SINGUP = strtobool(os.environ.get("SOCIALACCOUNT_WITH_GEONODE_LOCAL_SINGUP", "True"))
+SOCIALACCOUNT_WITH_GEONODE_LOCAL_SINGUP = ast.literal_eval(
+    os.environ.get("SOCIALACCOUNT_WITH_GEONODE_LOCAL_SINGUP", "True")
+)
 
-# Uncomment this to enable Linkedin and Facebook login
-# INSTALLED_APPS += (
-#    'allauth.socialaccount.providers.linkedin_oauth2',
-#    'allauth.socialaccount.providers.facebook',
-# )
+# GeoNode Default Generic OIDC Provider
 
-SOCIALACCOUNT_PROVIDERS = {
-    "linkedin_oauth2": {
-        "SCOPE": [
-            "r_emailaddress",
-            "r_liteprofile",
-        ],
-        "PROFILE_FIELDS": [
-            "id",
-            "email-address",
-            "first-name",
-            "last-name",
-            "picture-url",
-            "public-profile-url",
-        ],
-    },
-    "facebook": {
-        "METHOD": "oauth2",
-        "SCOPE": [
-            "email",
-            "public_profile",
-        ],
-        "FIELDS": [
-            "id",
-            "email",
-            "name",
-            "first_name",
-            "last_name",
-            "verified",
-            "locale",
-            "timezone",
-            "link",
-            "gender",
-        ],
-    },
-}
+SOCIALACCOUNT_OIDC_PROVIDER = os.environ.get("SOCIALACCOUNT_OIDC_PROVIDER", "geonode_openid_connect")
+SOCIALACCOUNT_OIDC_PROVIDER_ENABLED = ast.literal_eval(os.environ.get("SOCIALACCOUNT_OIDC_PROVIDER_ENABLED", "False"))
+SOCIALACCOUNT_ADAPTER = os.environ.get("SOCIALACCOUNT_ADAPTER", "geonode.people.adapters.GenericOpenIDConnectAdapter")
 
+_SOCIALACCOUNT_PROFILE_EXTRACTOR = os.environ.get(
+    "SOCIALACCOUNT_PROFILE_EXTRACTOR", "geonode.people.profileextractors.OpenIDExtractor"
+)
 SOCIALACCOUNT_PROFILE_EXTRACTORS = {
-    "facebook": "geonode.people.profileextractors.FacebookExtractor",
-    "linkedin_oauth2": "geonode.people.profileextractors.LinkedInExtractor",
+    SOCIALACCOUNT_OIDC_PROVIDER: _SOCIALACCOUNT_PROFILE_EXTRACTOR,
 }
 
+SOCIALACCOUNT_GROUP_ROLE_MAPPER = os.environ.get(
+    "SOCIALACCOUNT_GROUP_ROLE_MAPPER", "geonode.people.profileextractors.OpenIDGroupRoleMapper"
+)
+
+# Enable this in order to enable the OIDC SocialAccount Provider
+if SOCIALACCOUNT_OIDC_PROVIDER_ENABLED:
+    INSTALLED_APPS += ("geonode.people.socialaccount.providers.geonode_openid_connect",)
+
+_AZURE_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID", "")
+_AZURE_SOCIALACCOUNT_PROVIDER = {
+    "NAME": "Microsoft Azure",
+    "SCOPE": [
+        "User.Read",
+        "openid",
+    ],
+    "AUTH_PARAMS": {
+        "access_type": "online",
+        "prompt": "select_account",
+    },
+    "COMMON_FIELDS": {"email": "mail", "last_name": "surname", "first_name": "givenName"},
+    "UID_FIELD": "unique_name",
+    "GROUP_ROLE_MAPPER_CLASS": SOCIALACCOUNT_GROUP_ROLE_MAPPER,
+    "ACCOUNT_CLASS": "allauth.socialaccount.providers.microsoft.provider.MicrosoftGraphAccount",
+    "ACCESS_TOKEN_URL": f"https://login.microsoftonline.com/{_AZURE_TENANT_ID}/oauth2/v2.0/token",
+    "AUTHORIZE_URL": f"https://login.microsoftonline.com/{_AZURE_TENANT_ID}/oauth2/v2.0/authorize",
+    "PROFILE_URL": "https://graph.microsoft.com/v1.0/me",
+}
+
+_GOOGLE_SOCIALACCOUNT_PROVIDER = {
+    "NAME": "Google",
+    "SCOPE": [
+        "profile",
+        "email",
+    ],
+    "AUTH_PARAMS": {
+        "access_type": "online",
+        "prompt": "select_account consent",
+    },
+    "COMMON_FIELDS": {"email": "email", "last_name": "family_name", "first_name": "given_name"},
+    "GROUP_ROLE_MAPPER_CLASS": SOCIALACCOUNT_GROUP_ROLE_MAPPER,
+    "ACCOUNT_CLASS": "allauth.socialaccount.providers.google.provider.GoogleAccount",
+    "ACCESS_TOKEN_URL": "https://oauth2.googleapis.com/token",
+    "AUTHORIZE_URL": "https://accounts.google.com/o/oauth2/v2/auth",
+    "ID_TOKEN_ISSUER": "https://accounts.google.com",
+    "OAUTH_PKCE_ENABLED": True,
+}
+
+SOCIALACCOUNT_PROVIDERS_DEFS = {"azure": _AZURE_SOCIALACCOUNT_PROVIDER, "google": _GOOGLE_SOCIALACCOUNT_PROVIDER}
+
+_SOCIALACCOUNT_PROVIDER = os.environ.get("SOCIALACCOUNT_PROVIDER", "google")
+SOCIALACCOUNT_PROVIDERS = {
+    SOCIALACCOUNT_OIDC_PROVIDER: SOCIALACCOUNT_PROVIDERS_DEFS.get(_SOCIALACCOUNT_PROVIDER),
+}
+
+# Invitation Adapter
 INVITATIONS_ADAPTER = ACCOUNT_ADAPTER
 INVITATIONS_CONFIRMATION_URL_NAME = "geonode.invitations:accept-invite"
 
@@ -2117,7 +2134,7 @@ USER_ANALYTICS_GZIP = ast.literal_eval(os.getenv("USER_ANALYTICS_GZIP", "False")
 
 GEOIP_PATH = os.getenv("GEOIP_PATH", os.path.join(PROJECT_ROOT, "GeoIPCities.dat"))
 # This controls if tastypie search on resourches is performed only with titles
-SEARCH_RESOURCES_EXTENDED = strtobool(os.getenv("SEARCH_RESOURCES_EXTENDED", "True"))
+SEARCH_RESOURCES_EXTENDED = ast.literal_eval(os.getenv("SEARCH_RESOURCES_EXTENDED", "True"))
 # -- END Settings for MONITORING plugin
 
 CATALOG_METADATA_TEMPLATE = os.getenv("CATALOG_METADATA_TEMPLATE", "catalogue/full_metadata.xml")
@@ -2190,7 +2207,6 @@ CUSTOM_METADATA_SCHEMA = os.getenv("CUSTOM_METADATA_SCHEMA ", {})
 Variable used to actually get the expected metadata schema for each resource_type.
 In this way, each resource type can have a different metadata schema
 """
-
 EXTRA_METADATA_SCHEMA = {
     **{
         "map": os.getenv("MAP_EXTRA_METADATA_SCHEMA", DEFAULT_EXTRA_METADATA_SCHEMA),
@@ -2201,12 +2217,27 @@ EXTRA_METADATA_SCHEMA = {
     **CUSTOM_METADATA_SCHEMA,
 }
 
+"""
+List of modules that implement custom metadata storers that will be called when the metadata of a resource is saved
+"""
+METADATA_STORERS = [
+    # 'geonode.resource.regions_storer.spatial_predicate_region_assignor',
+]
+
+
+"""
+List of modules that implement the deletion rules for a user
+"""
+USER_DELETION_RULES = [
+    "geonode.people.utils.user_has_resources"
+    # ,"geonode.people.utils.user_is_manager"
+]
+
 
 """
 Define the URLs patterns used by the SizeRestrictedFileUploadHandler
 to evaluate if the file is greater than the limit size defined
 """
-
 SIZE_RESTRICTED_FILE_UPLOAD_ELEGIBLE_URL_NAMES = (
     "data_upload",
     "uploads-upload",
@@ -2311,7 +2342,9 @@ IMPORTER_HANDLERS = ast.literal_eval(
     'importer.handlers.shapefile.handler.ShapeFileHandler',\
     'importer.handlers.kml.handler.KMLFileHandler',\
     'importer.handlers.csv.handler.CSVFileHandler',\
-    'importer.handlers.geotiff.handler.GeoTiffFileHandler'\
+    'importer.handlers.geotiff.handler.GeoTiffFileHandler',\
+    'importer.handlers.xml.handler.XMLFileHandler',\
+    'importer.handlers.sld.handler.SLDFileHandler',\
 ]",
     )
 )
@@ -2319,9 +2352,21 @@ IMPORTER_HANDLERS = ast.literal_eval(
 INSTALLED_APPS += ("geonode.facets",)
 GEONODE_APPS += ("geonode.facets",)
 
-FACET_PROVIDERS = (
-    "geonode.facets.providers.category.CategoryFacetProvider",
-    "geonode.facets.providers.users.OwnerFacetProvider",
-    "geonode.facets.providers.thesaurus.ThesaurusFacetProvider",
-    "geonode.facets.providers.region.RegionFacetProvider",
+FACET_PROVIDERS = [
+    {"class": "geonode.facets.providers.baseinfo.ResourceTypeFacetProvider"},
+    {"class": "geonode.facets.providers.baseinfo.FeaturedFacetProvider"},
+    {"class": "geonode.facets.providers.category.CategoryFacetProvider", "config": {"order": 5, "type": "select"}},
+    {"class": "geonode.facets.providers.keyword.KeywordFacetProvider", "config": {"order": 6, "type": "select"}},
+    {"class": "geonode.facets.providers.region.RegionFacetProvider", "config": {"order": 7, "type": "select"}},
+    {"class": "geonode.facets.providers.users.OwnerFacetProvider", "config": {"order": 8, "type": "select"}},
+    {"class": "geonode.facets.providers.group.GroupFacetProvider", "config": {"order": 9, "type": "select"}},
+    {"class": "geonode.facets.providers.thesaurus.ThesaurusFacetProvider", "config": {"type": "select"}},
+]
+
+DEFAULT_DATASET_DOWNLOAD_HANDLER = "geonode.layers.download_handler.DatasetDownloadHandler"
+
+DATASET_DOWNLOAD_HANDLERS = ast.literal_eval(os.getenv("DATASET_DOWNLOAD_HANDLERS", "[]"))
+
+AUTO_ASSIGN_REGISTERED_MEMBERS_TO_CONTRIBUTORS = ast.literal_eval(
+    os.getenv("AUTO_ASSIGN_REGISTERED_MEMBERS_TO_CONTRIBUTORS", "True")
 )
