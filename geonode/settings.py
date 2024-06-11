@@ -1289,6 +1289,11 @@ except ValueError:
         else re.split(r" *[,|:;] *", os.getenv("PROXY_ALLOWED_HOSTS"))
     )
 
+# Tuple with valid strings to be matched inside the request querystring to let it pass through the proxy
+PROXY_ALLOWED_PARAMS_NEEDLES = ast.literal_eval(os.getenv("PROXY_ALLOWED_PARAMS_NEEDLES", "()"))
+# Tuple with valid strings to be matched inside the request path to let it pass through the proxy
+PROXY_ALLOWED_PATH_NEEDLES = ast.literal_eval(os.getenv("PROXY_ALLOWED_PATH_NEEDLES", "()"))
+
 # The proxy to use when making cross origin requests.
 PROXY_URL = os.environ.get("PROXY_URL", "/proxy/?url=")
 
@@ -1461,16 +1466,6 @@ if GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY == "mapstore":
         return None
 
     GEONODE_CATALOGUE_SERVICE = get_geonode_catalogue_service()
-
-    MAPSTORE_CATALOGUE_SERVICES = {}
-
-    MAPSTORE_CATALOGUE_SELECTED_SERVICE = ""
-
-    if GEONODE_CATALOGUE_SERVICE:
-        MAPSTORE_CATALOGUE_SERVICES[list(list(GEONODE_CATALOGUE_SERVICE.keys()))[0]] = GEONODE_CATALOGUE_SERVICE[
-            list(list(GEONODE_CATALOGUE_SERVICE.keys()))[0]
-        ]  # noqa
-        MAPSTORE_CATALOGUE_SELECTED_SERVICE = list(list(GEONODE_CATALOGUE_SERVICE.keys()))[0]
 
     DEFAULT_MS2_BACKGROUNDS = [
         {
