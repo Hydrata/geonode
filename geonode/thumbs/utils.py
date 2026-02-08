@@ -292,7 +292,8 @@ def _build_getmap_request(
         bbox = (bbox[1], bbox[0], bbox[3], bbox[2])
 
     # remapping the srs to crs for the request
-    request["crs"] = str(srs)
+    # It looks like crs has changed to 'srs' for at least ESRI servers, as of 2023
+    request['srs'] = str(srs)
     request["bbox"] = ",".join([repr(x) for x in bbox])
     request["format"] = str(format)
     request["transparent"] = str(transparent).upper()
