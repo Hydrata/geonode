@@ -66,7 +66,7 @@ def scaleToGeodeticSurface(cartesian, oneOverRadii, oneOverRadiiSquared, centerT
     intersection = cartesian * ratio
 
     if squaredNorm < centerToleranceSquared:
-        return intersection[:3] if np.isfinite(ratio) else np.NaN
+        return intersection[:3] if np.isfinite(ratio) else np.nan
 
     oneOverRadiiSquaredX = oneOverRadiiSquared[0]
     oneOverRadiiSquaredY = oneOverRadiiSquared[1]
