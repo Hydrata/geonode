@@ -524,10 +524,10 @@ class ThumbnailAlgorithms:
         trg_w = settings.THUMBNAIL_SIZE["width"]
         trg_h = settings.THUMBNAIL_SIZE["height"]
 
-        src_w, src_w = img.size
+        src_w, src_h = img.size
 
-        ratio = min(trg_w / src_w, trg_h / src_w)
-        new_size = (int(src_w * ratio), int(src_w * ratio))
+        ratio = min(trg_w / src_w, trg_h / src_h)
+        new_size = (int(src_w * ratio), int(src_h * ratio))
         scaled_img = img.resize(new_size, Image.Resampling.BILINEAR)
 
         # Create a new image with the desired size and a white background

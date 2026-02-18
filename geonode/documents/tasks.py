@@ -162,7 +162,8 @@ def create_document_thumbnail(self, object_id):
         ResourceBase.objects.filter(id=document.id).update(thumbnail_url=None)
     else:
         filename = f"document-{document.uuid}-thumb.jpg"
-        document.save_thumbnail(filename, thumbnail_content, centering=centering)
+        from geonode.thumbs.utils import ThumbnailAlgorithms
+        document.save_thumbnail(filename, thumbnail_content, thumbnail_algorithm=ThumbnailAlgorithms.scale)
         logger.debug(f"Thumbnail for document #{object_id} created.")
 
 
