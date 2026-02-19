@@ -249,6 +249,12 @@ EXTRA_LANG_INFO = {
         "name": "Sinhala",
         "name_local": "sinhala",
     },
+    "ht": {
+        "bidi": False,
+        "code": "ht",
+        "name": "Haitian Creole",
+        "name_local": "Kreyòl Ayisyen",
+    },
 }
 
 AUTH_USER_MODEL = os.getenv("AUTH_USER_MODEL", "people.Profile")
@@ -1481,11 +1487,23 @@ if GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY == "mapstore":
     MAPSTORE_BASELAYERS_SOURCES = os.environ.get("MAPSTORE_BASELAYERS_SOURCES", {})
 
     MAPSTORE_DEFAULT_LANGUAGES = (
+        ("ca-es", "Català"),
+        ("da-dk", "Dansk"),
         ("de-de", "Deutsch"),
         ("en-us", "English"),
         ("es-es", "Español"),
+        ("fi-fi", "Suomi"),
         ("fr-fr", "Français"),
+        ("hr-hr", "Hrvatski"),
+        ("ht-ht", "Kreyòl Ayisyen"),
+        ("is-is", "Íslenska"),
         ("it-it", "Italiano"),
+        ("nl-nl", "Nederlands"),
+        ("pt-pt", "Português"),
+        ("sk-sk", "Slovensky"),
+        ("sv-se", "Svenska"),
+        ("vi-vn", "Tiếng Việt"),
+        ("zh-zh", "中文"),
     )
 
     if os.getenv("LANGUAGES"):
