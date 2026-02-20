@@ -257,6 +257,10 @@ EXTRA_LANG_INFO = {
     },
 }
 
+# Register custom languages with Django so get_language_info() works
+import django.conf.locale
+django.conf.locale.LANG_INFO.update(EXTRA_LANG_INFO)
+
 AUTH_USER_MODEL = os.getenv("AUTH_USER_MODEL", "people.Profile")
 
 PASSWORD_HASHERS = [

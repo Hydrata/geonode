@@ -44,7 +44,7 @@ CONFIGURATION = {
         "home": ".",
         "url": settings.CATALOGUE["default"]["URL"],
         "encoding": "UTF-8",
-        "language": settings.LANGUAGE_CODE,
+        "language": settings.LANGUAGE_CODE if settings.LANGUAGE_CODE in ("en", "fr", "el") else "en",
         "maxrecords": "10",
         #  'loglevel': 'DEBUG',
         #  'logfile': '/tmp/pycsw.log',
