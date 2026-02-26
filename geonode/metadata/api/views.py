@@ -19,6 +19,7 @@
 import logging
 
 from dal import autocomplete
+from drf_spectacular.openapi import AutoSchema as SpectacularAutoSchema
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from rest_framework.viewsets import ViewSet
 from rest_framework.decorators import action
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 class MetadataViewSet(ViewSet):
+    schema = SpectacularAutoSchema()
     permission_classes = [IsAuthenticatedOrReadOnly, UserHasPerms]
 
     """
