@@ -64,7 +64,12 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         ExtentFilter,
         MapPermissionsFilter,
     ]
-    queryset = Map.objects.all().order_by("-created")
+    queryset = Map.objects.all().prefetch_related(
+        "maplayers",
+        "maplayers__dataset",
+        "maplayers__dataset__styles",
+        "maplayers__dataset__default_style",
+    ).order_by("-created")
     serializer_class = MapSerializer
     pagination_class = GeoNodeApiPagination
 
@@ -72,6 +77,11 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         # Avoid overfetching removing mapslayer of the list.
         request.query_params.add("exclude[]", "maplayers")
         return super(MapViewSet, self).list(request, *args, **kwargs)
+
+    def retrieve(self, request, *args, **kwargs):
+        response = super(MapViewSet, self).retrieve(request, *args, **kwargs)
+        response["Cache-Control"] = "private, max-age=300"
+        return response
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
