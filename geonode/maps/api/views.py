@@ -64,12 +64,7 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         ExtentFilter,
         MapPermissionsFilter,
     ]
-    queryset = Map.objects.all().prefetch_related(
-        "maplayers",
-        "maplayers__dataset",
-        "maplayers__dataset__styles",
-        "maplayers__dataset__default_style",
-    ).order_by("-created")
+    queryset = Map.objects.all().order_by("-created")
     serializer_class = MapSerializer
     pagination_class = GeoNodeApiPagination
 

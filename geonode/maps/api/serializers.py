@@ -100,10 +100,10 @@ class DynamicFullyEmbedM2MRelationField(DynamicRelationField):
 class MapLayerDatasetSerializer(DynamicModelSerializer):
     default_style = DynamicRelationField(StyleSerializer, embed=True, many=False, read_only=True)
     styles = DynamicRelationField(StyleSerializer, embed=True, many=True, read_only=True)
-    featureinfo_custom_template = FeatureInfoTemplateField()
+    featureinfo_custom_template = FeatureInfoTemplateField(deferred=True)
 
     perms = serializers.SerializerMethodField(read_only=True)
-    links = DynamicRelationField(LinksSerializer, source="id", read_only=True)
+    links = DynamicRelationField(LinksSerializer, source="id", read_only=True, deferred=True)
 
     class Meta:
         model = Dataset
