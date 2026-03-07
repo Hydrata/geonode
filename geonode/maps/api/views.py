@@ -16,9 +16,11 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+import hashlib
 import logging
 from uuid import uuid4
 
+from django.core.cache import cache
 from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from dynamic_rest.filters import DynamicFilterBackend, DynamicSortingFilter
@@ -43,6 +45,8 @@ from geonode.maps.models import Map
 from geonode.maps.signals import map_changed_signal
 from geonode.resource.manager import resource_manager
 from geonode.utils import resolve_object
+
+MAP_RETRIEVE_CACHE_TTL = 120  # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +78,42 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         return super(MapViewSet, self).list(request, *args, **kwargs)
 
     def retrieve(self, request, *args, **kwargs):
+        cache_key = self._retrieve_cache_key(request, kwargs.get("pk"))
+        cached = cache.get(cache_key) if cache_key else None
+        if cached is not None:
+            response = Response(cached)
+            response["Cache-Control"] = "private, max-age=300"
+            response["X-Cache"] = "HIT"
+            return response
+
         response = super(MapViewSet, self).retrieve(request, *args, **kwargs)
         response["Cache-Control"] = "private, max-age=300"
+        response["X-Cache"] = "MISS"
+
+        if cache_key and response.status_code == 200:
+            cache.set(cache_key, response.data, MAP_RETRIEVE_CACHE_TTL)
+
         return response
+
+    @staticmethod
+    def _retrieve_cache_key(request, pk):
+        if not pk:
+            return None
+        user_id = request.user.pk if request.user.is_authenticated else 0
+        qs = request.META.get("QUERY_STRING", "")
+        qs_hash = hashlib.md5(qs.encode()).hexdigest()[:12]
+        # Include a version number so we can invalidate all keys for a map
+        version = cache.get(f"map_v_{pk}") or 0
+        return f"map_api_{pk}_v{version}_{user_id}_{qs_hash}"
+
+    @staticmethod
+    def invalidate_map_cache(map_pk):
+        """Bump version to invalidate all cached responses for this map."""
+        version_key = f"map_v_{map_pk}"
+        try:
+            cache.incr(version_key)
+        except ValueError:
+            cache.set(version_key, 1)
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
@@ -162,6 +199,8 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         )
 
     def _post_change_routines(self, instance: Map, create_action_perfomed: bool, additional_data: dict):
+        # Invalidate cached API responses for this map
+        self.invalidate_map_cache(instance.pk)
         # Step 1: Handle Maplayers signals if this is and update action
         if not create_action_perfomed:
             dataset_names_before_changes = additional_data.pop("dataset_names_before_changes", [])
