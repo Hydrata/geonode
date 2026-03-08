@@ -28,7 +28,7 @@ from owslib.etree import etree as dlxml
 from urllib.parse import urlsplit, urljoin, unquote, parse_qsl
 
 from django.contrib.auth import authenticate
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseNotFound, HttpResponseRedirect
 from django.views.decorators.http import require_POST
 from django.conf import settings
 from django.contrib.auth.decorators import user_passes_test
@@ -487,7 +487,10 @@ def get_capabilities(request, layerid=None, user=None, mapid=None, category=None
     layers = None
     cap_name = " Capabilities - "
     if layerid is not None:
-        dataset_obj = Dataset.objects.get(id=layerid)
+        try:
+            dataset_obj = Dataset.objects.get(id=layerid)
+        except Dataset.DoesNotExist:
+            return HttpResponseNotFound("Dataset not found")
         cap_name += dataset_obj.title
         layers = Dataset.objects.filter(id=layerid)
     elif user is not None:
@@ -497,7 +500,10 @@ def get_capabilities(request, layerid=None, user=None, mapid=None, category=None
         layers = Dataset.objects.filter(category__identifier=category)
         cap_name += category
     elif mapid is not None:
-        map_obj = Map.objects.get(id=mapid)
+        try:
+            map_obj = Map.objects.get(id=mapid)
+        except Map.DoesNotExist:
+            return HttpResponseNotFound("Map not found")
         cap_name += map_obj.title
         alternates = []
         for layer in map_obj.maplayers.iterator():
