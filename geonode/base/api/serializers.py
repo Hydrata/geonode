@@ -478,7 +478,13 @@ class DataBlobSerializer(DynamicModelSerializer):
     def to_representation(self, value):
         data = ResourceBase.objects.filter(id=value)
         if data.exists() and data.count() == 1:
-            return data.get().blob
+            blob = data.get().blob
+            if isinstance(blob, str):
+                try:
+                    return json.loads(blob)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+            return blob
         return {}
 
 
