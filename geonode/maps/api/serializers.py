@@ -103,7 +103,7 @@ class MapLayerDatasetSerializer(DynamicModelSerializer):
     featureinfo_custom_template = FeatureInfoTemplateField(deferred=True)
 
     perms = serializers.SerializerMethodField(read_only=True)
-    links = DynamicRelationField(LinksSerializer, source="id", read_only=True, deferred=True)
+    links = DynamicRelationField(LinksSerializer, source="id", read_only=True, deferred=False)
 
     class Meta:
         model = Dataset
