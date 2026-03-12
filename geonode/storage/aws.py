@@ -47,7 +47,7 @@ class AwsStorageManager(StorageManagerInterface):
         return self._aws.save(name, content)
 
     def url(self, name):
-        return self._drx.url(name)
+        return self._aws.url(name)
 
     def size(self, name):
         return self._aws.size(name)
