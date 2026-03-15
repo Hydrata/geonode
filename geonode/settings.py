@@ -1512,8 +1512,11 @@ if GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY == "mapstore":
 
     if os.getenv("LANGUAGES"):
         # Map given languages to mapstore supported languages.
+        # Compare only the language prefix (before first hyphen) to avoid
+        # substring false positives (e.g. "es" matching "ca-es" for Catalan).
+        _lang_prefixes = {m.split("-")[0] for m in dict(LANGUAGES).keys()}
         LANGUAGES = tuple(
-            (k, v) for k, v in dict(MAPSTORE_DEFAULT_LANGUAGES).items() if any(m in k for m in dict(LANGUAGES).keys())
+            (k, v) for k, v in dict(MAPSTORE_DEFAULT_LANGUAGES).items() if k.split("-")[0] in _lang_prefixes
         )
     else:
         LANGUAGES = MAPSTORE_DEFAULT_LANGUAGES
