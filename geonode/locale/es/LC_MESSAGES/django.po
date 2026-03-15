@@ -7082,3 +7082,6 @@ msgstr ""
 
 #~ msgid "Thesaurus"
 #~ msgstr "Tesauro"
+
+msgid "To request an account, please contact the site administrator."
+msgstr "Para solicitar una cuenta, por favor contacte al administrador del sitio."
