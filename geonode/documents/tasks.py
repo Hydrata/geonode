@@ -103,7 +103,6 @@ def create_document_thumbnail(self, object_id):
     image_file = None
     thumbnail_content = None
     remove_tmp_file = False
-    centering = (0.5, 0.5)
 
     doc_path = None
 
@@ -149,9 +148,6 @@ def create_document_thumbnail(self, object_id):
             remove_tmp_file = True
         try:
             thumbnail_content = doc_renderer.render(doc_path)
-            preferred_centering = doc_renderer.preferred_crop_centering(doc_path)
-            if preferred_centering is not None:
-                centering = preferred_centering
         except Exception as e:
             print(e)
         finally:
