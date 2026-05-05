@@ -46,7 +46,7 @@ from geonode.maps.signals import map_changed_signal
 from geonode.resource.manager import resource_manager
 from geonode.utils import resolve_object
 
-MAP_RETRIEVE_CACHE_TTL = 120  # seconds
+MAP_RETRIEVE_CACHE_TTL = 1800  # seconds (TASK-666 H-S8 PoC: 120 → 1800)
 
 logger = logging.getLogger(__name__)
 
