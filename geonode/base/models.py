@@ -2088,6 +2088,32 @@ class Configuration(SingletonModel):
     class Meta:
         verbose_name_plural = "Configuration"
 
+    # Per-process memoization. The Configuration row is a singleton (pk=1) and
+    # changes only via admin save() or `force_read_only_mode` management cmd —
+    # both of which call .save() (see below) which invalidates the cache.
+    # Profiling on 2026-05-05 (B3 lens) showed 86 calls/cold-blob × ~1ms each
+    # ≈ 86ms saved per anon map blob. Reference: TASK-673 D1.2 (B5 S9).
+    _cached_instance = None
+
+    @classmethod
+    def load(cls):
+        if cls._cached_instance is None:
+            cls._cached_instance = super().load()
+        else:
+            # Apply env-var override on every call (super().load() does this
+            # too — keep behavior identical when env changes mid-process).
+            val = os.getenv("FORCE_READ_ONLY_MODE", None)
+            if val is not None:
+                import ast as _ast
+
+                setattr(cls._cached_instance, "read_only", _ast.literal_eval(val))
+        return cls._cached_instance
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Invalidate the per-process cache so subsequent .load() refetches.
+        type(self)._cached_instance = None
+
     def __str__(self):
         return "Configuration"
 
