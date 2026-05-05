@@ -470,8 +470,9 @@ class PermSpec(PermSpecConverterBase):
                     }
                 )
             else:
+                from geonode.security.utils import get_anonymous_group
                 anonymous_perms = {
-                    "id": Group.objects.get(name="anonymous").id,
+                    "id": get_anonymous_group().id,
                     "title": "anonymous",
                     "name": "anonymous",
                     "permissions": _to_compact_perms(_perms, self._resource.resource_type, self._resource.subtype),
@@ -541,7 +542,8 @@ class PermSpec(PermSpecConverterBase):
         if anonymous_perms:
             group_perms.append(anonymous_perms)
         else:
-            anonymous_group = Group.objects.get(name="anonymous")
+            from geonode.security.utils import get_anonymous_group
+            anonymous_group = get_anonymous_group()
             group_perms.append(
                 {
                     "id": anonymous_group.id,

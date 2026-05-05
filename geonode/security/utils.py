@@ -97,6 +97,29 @@ def perms_as_set(perm) -> set:
     return perm if isinstance(perm, set) else set(perm if isinstance(perm, list) else [perm])
 
 
+# Per-process memoization of the "anonymous" Group lookup. The row is a
+# fixture, never deleted in production, and Group.id is immutable. Profiling
+# on 2026-05-05 (B3 lens) showed 57 calls per cold anon map blob × ~1ms each
+# ≈ 57ms saved. Reference: TASK-673 D1.3 (B5 S10).
+_anonymous_group_cache = None
+
+
+def get_anonymous_group():
+    """
+    Return the "anonymous" Django Group, memoized per-process.
+
+    Caches the result after the first DB hit. The anonymous group is a
+    deployment fixture and is never deleted; if it is missing, the underlying
+    Group.objects.get raises Group.DoesNotExist as before (no behavior change).
+
+    Use this in hot paths instead of ``Group.objects.get(name="anonymous")``.
+    """
+    global _anonymous_group_cache
+    if _anonymous_group_cache is None:
+        _anonymous_group_cache = Group.objects.get(name="anonymous")
+    return _anonymous_group_cache
+
+
 def get_geoapp_subtypes():
     """
     Returns a list of geoapp subtypes.
@@ -313,7 +336,7 @@ class AdvancedSecurityWorkflowManager:
          - The "members" of the Groups affecting the Resource
         """
         _resource = instance or AdvancedSecurityWorkflowManager.get_instance(uuid)
-        anonymous_group = Group.objects.get(name="anonymous")
+        anonymous_group = get_anonymous_group()
         registered_members_group = None
         registered_members_group_name = groups_settings.REGISTERED_MEMBERS_GROUP_NAME
         if getattr(groups_settings, "AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_NAME", False):
