@@ -108,12 +108,35 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
 
     @staticmethod
     def invalidate_map_cache(map_pk):
-        """Bump version to invalidate all cached responses for this map."""
+        """Bump version to invalidate all cached responses for this map.
+
+        Two correctness requirements forced the current shape:
+
+        (1) The version_key MUST live at least as long as any blob entry
+            indexed under it. Default Django cache TTL is 300s; blob
+            entries cache at MAP_RETRIEVE_CACHE_TTL (1800s). If the
+            version_key expires first, the lookup falls back to v0 →
+            still-alive v0 blob entry from a much earlier write → stale
+            blob served for up to (MAP_RETRIEVE_CACHE_TTL − default_ttl)
+            after the version expires. We refresh the version_key TTL
+            on every invalidation, sized to outlive any blob entry it
+            namespaces.
+
+        (2) Callers MUST schedule this via transaction.on_commit when
+            invalidating from inside a write transaction; otherwise a
+            concurrent GET landing between the cache-version bump and
+            the DB commit will read the OLD blob (READ COMMITTED hides
+            the uncommitted write), cache it under the NEW version key,
+            and serve it for MAP_RETRIEVE_CACHE_TTL.
+        """
         version_key = f"map_v_{map_pk}"
         try:
-            cache.incr(version_key)
+            new_version = cache.incr(version_key)
         except ValueError:
-            cache.set(version_key, 1)
+            new_version = 1
+        # incr preserves the original TTL; re-set so this version_key
+        # outlives the longest-lived blob entry under it.
+        cache.set(version_key, new_version, MAP_RETRIEVE_CACHE_TTL)
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
@@ -199,8 +222,14 @@ class MapViewSet(ApiPresetsInitializer, DynamicModelViewSet, AdvertisedListMixin
         )
 
     def _post_change_routines(self, instance: Map, create_action_perfomed: bool, additional_data: dict):
-        # Invalidate cached API responses for this map
-        self.invalidate_map_cache(instance.pk)
+        # Invalidate cached API responses for this map. Defer to
+        # transaction.on_commit so the cache version is bumped only
+        # after the DB write is visible to other connections — without
+        # this, a concurrent GET between the bump and the commit would
+        # read the OLD blob at READ COMMITTED, cache it at the NEW
+        # version key, and serve it stale for MAP_RETRIEVE_CACHE_TTL.
+        pk = instance.pk
+        transaction.on_commit(lambda: self.invalidate_map_cache(pk))
         # Step 1: Handle Maplayers signals if this is and update action
         if not create_action_perfomed:
             dataset_names_before_changes = additional_data.pop("dataset_names_before_changes", [])
