@@ -1,10 +1,11 @@
 from django.db import migrations
-from geonode.base.models import RestrictionCodeType
+
 
 def fix_otherrestrictions_codetype(apps, schema_editor):
     """
     Fixes the identifier, description and gn_description for the 'otherRestrictions' RestrictionCodeType.
     """
+    RestrictionCodeType = apps.get_model('base', 'RestrictionCodeType')
     try:
         obj = RestrictionCodeType.objects.get(identifier='limitation not listed')
         obj.identifier = 'otherRestrictions'
