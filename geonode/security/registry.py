@@ -279,6 +279,7 @@ class PermissionsHandlerRegistry:
 
         try:
             from geonode.security.utils import get_anonymous_group
+
             anonymous_group = get_anonymous_group()
             if anonymous_group and anonymous_group not in groups:
                 groups.append(anonymous_group)
