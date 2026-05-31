@@ -95,6 +95,21 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.assertEqual(response_json["access_token"], token.token)
         self.assertEqual(response_json["user_id"], _user.pk)
 
+    def test_keyinfo_response(self):
+        # GeoServer AuthKey shim (TASK-1324): maps ?key=<access_token> to
+        # "<username>;<group>,<group>" for the WebServiceBodyResponse user-group
+        # service. Valid token -> 200 with the username as the first ;-field.
+        keyinfo_url = reverse("keyinfo")
+        _user = get_user_model().objects.get(username="bobby")
+        token = get_or_create_token(_user)
+        response = self.client.get(keyinfo_url, data={"key": token.token})
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertEqual(body.split(";", 1)[0], _user.get_username())
+        # Invalid and missing keys are rejected.
+        self.assertEqual(self.client.get(keyinfo_url, data={"key": "nope"}).status_code, 401)
+        self.assertEqual(self.client.get(keyinfo_url).status_code, 401)
+
 
 class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
     @classmethod

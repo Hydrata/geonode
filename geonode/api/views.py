@@ -124,6 +124,48 @@ def verify_token(request):
 
 
 @csrf_exempt
+def key_info(request):
+    """GeoServer AuthKey shim (TASK-1324).
+
+    Maps an OAuth2 access_token (passed as ?key=<token> by GeoServer's
+    WebServiceAuthenticationKeyMapper) to the user's identity and roles, so
+    GeoServer can authenticate cacheable GWC tile requests via its authkey
+    filter's internal cache — skipping the per-tile OAuth2 round-trip that the
+    GWC dispatch's per-request JSESSIONID otherwise forces.
+
+    Response body (text/plain): ``<username>;<group>,<group>,...`` — RAW GeoNode
+    group names (e.g. ``tileuser;registered-members,contributors``). The authkey
+    WebServiceAuthenticationKeyMapper extracts the username (regex up to the
+    ``;``); the companion WebServiceBodyResponseUserGroupService re-parses the
+    SAME recorded body for the comma-separated groups, upper-casing each and
+    prepending ``ROLE_`` itself (so ``registered-members`` becomes the GeoFence
+    role ``ROLE_REGISTERED-MEMBERS``) — hence the shim must NOT prefix them.
+    Roles are required: without them an authed
+    user authenticates but is denied every group-shared layer (GeoFence sees
+    ``role:ANY``). Authentication only — GeoFence still authorises. Returns
+    ``<username>;<roles>`` (200) or empty 401.
+    """
+    key = request.GET.get("key")
+    if key:
+        try:
+            token = verify_access_token(None, key)
+        except Exception:
+            token = None
+        if token:
+            user = token.user
+            # Raw GeoNode group names — GeoServer's WebServiceBodyResponse
+            # user-group service upper-cases and prepends "ROLE_" itself, so
+            # "registered-members" becomes the GeoFence role
+            # "ROLE_REGISTERED-MEMBERS". Do NOT prefix here (double-prefix bug).
+            roles = [group.name for group in user.groups.all()]
+            if user.is_superuser:
+                roles.append("admin")
+            body = "{};{}".format(user.get_username(), ",".join(roles))
+            return HttpResponse(body, content_type="text/plain")
+    return HttpResponse("", status=401, content_type="text/plain")
+
+
+@csrf_exempt
 @superuser_or_apiauth()
 def roles(request):
     groups = [group.name for group in Group.objects.all()]
