@@ -505,3 +505,171 @@ DUMMY_MAPLAYERS_DATA_WITH_EXTRA_INFO = [
         "order": 99,
     }
 ]
+
+
+class MapLayerPermsBulkTests(APITestCase):
+    """
+    TASK-583: parity + query-count gate for permissions_registry.get_perms_bulk
+    and the bulk map-blob perms path (MapSerializer.to_representation ->
+    MapLayerDatasetSerializer.get_perms).
+
+    The optimisation MUST return exactly what the legacy per-resource path returns;
+    these tests are that contract.
+    """
+
+    fixtures = ["initial_data.json", "group_test_data.json", "default_oauth_apps.json"]
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        create_models(b"dataset")
+        create_models(b"map")
+        User = get_user_model()
+
+        cls.datasets = list(Dataset.objects.all().order_by("pk"))
+        assert len(cls.datasets) >= 3, "need a few datasets to exercise the bulk path"
+        # Exercise the raster perm branch on one dataset (bypass signals via .update()).
+        Dataset.objects.filter(pk=cls.datasets[0].pk).update(subtype="raster")
+        cls.datasets = list(Dataset.objects.all().order_by("pk"))
+
+        cls.superuser = User.objects.create_superuser("bulk_su", "su@t.com", "pw")
+        cls.staff = User.objects.create_user("bulk_staff", "st@t.com", "pw", is_staff=True)
+        cls.member = User.objects.create_user("bulk_member", "me@t.com", "pw")
+        # A brand-new user with NO grants on any layer: the actual "per-user-cold"
+        # scenario the optimisation targets (cache misses, no perms -> no handler
+        # queries), used for the constant-query gate.
+        cls.newcomer = User.objects.create_user("bulk_newcomer", "nc@t.com", "pw")
+        cls.owner = cls.datasets[1].owner
+        cls.anon = get_anonymous_user()
+
+        # Varied grants so the parity comparison spans direct / group / anonymous perms.
+        assign_perm("view_resourcebase", cls.member, cls.datasets[1].get_self_resource())
+        assign_perm("change_dataset_data", cls.member, cls.datasets[1])
+        assign_perm("view_resourcebase", cls.anon, cls.datasets[2].get_self_resource())
+        grp = Group.objects.create(name="bulk_parity_group")
+        cls.member.groups.add(grp)
+        assign_perm("view_resourcebase", grp, cls.datasets[0].get_self_resource())
+
+    # ---- helpers -------------------------------------------------------------
+    def _legacy(self, user):
+        from django.core.cache import cache
+        from geonode.security.registry import permissions_registry
+
+        cache.clear()
+        return {
+            ds.pk: set(permissions_registry.get_perms(instance=ds, user=user, use_cache=False)) for ds in self.datasets
+        }
+
+    def _bulk(self, user):
+        from django.core.cache import cache
+        from geonode.security.registry import permissions_registry
+
+        cache.clear()
+        return {
+            pk: set(v)
+            for pk, v in permissions_registry.get_perms_bulk(self.datasets, user=user, use_cache=False).items()
+        }
+
+    # ---- AC#4: payload identical to legacy path for every user class ----------
+    def test_parity_all_user_classes(self):
+        for label, user in [
+            ("anonymous", self.anon),
+            ("owner", self.owner),
+            ("group-member", self.member),
+            ("staff", self.staff),
+            ("superuser", self.superuser),
+        ]:
+            with self.subTest(user=label):
+                self.assertEqual(self._bulk(user), self._legacy(user), f"bulk != legacy for {label}")
+
+    # ---- AC#2 + AC#6: per-pk cache writes match _get_cache_key, single lookups hit
+    def test_bulk_writes_per_pk_cache_and_single_lookup_hits(self):
+        from django.core.cache import cache
+        from geonode.security.registry import permissions_registry
+
+        cache.clear()
+        bulk = permissions_registry.get_perms_bulk(self.datasets, user=self.member, use_cache=True)
+        for ds in self.datasets:
+            key = permissions_registry._get_cache_key([ds.pk], [self.member], None)
+            self.assertIsNotNone(cache.get(key), f"missing cache entry for ds {ds.pk}")
+            self.assertEqual(set(cache.get(key)), set(bulk[ds.pk]))
+            # A subsequent single-resource lookup is served from cache: it must NOT
+            # recompute perms. (One residual query is the get_anonymous_user() lookup
+            # inside the pre-existing _get_cache_key; the perms themselves are cached.)
+            from django.test.utils import CaptureQueriesContext
+            from django.db import connection
+
+            with CaptureQueriesContext(connection) as ctx:
+                cached_perms = permissions_registry.get_perms(instance=ds, user=self.member, use_cache=True)
+            self.assertLessEqual(len(ctx.captured_queries), 1)
+            self.assertEqual(set(cached_perms), set(bulk[ds.pk]))
+
+    def test_bulk_writes_anonymous_cache_key(self):
+        from django.core.cache import cache
+        from geonode.security.registry import permissions_registry
+
+        cache.clear()
+        permissions_registry.get_perms_bulk(self.datasets, user=self.anon, use_cache=True)
+        for ds in self.datasets:
+            key = permissions_registry._get_cache_key([ds.pk], [self.anon], None)
+            self.assertIn(":anonymous", key)
+            self.assertIsNotNone(cache.get(key), f"missing anonymous cache entry for ds {ds.pk}")
+
+    # ---- AC#1: query count is small and CONSTANT (does not grow with layer count)
+    def test_bulk_query_count_is_constant(self):
+        from django.core.cache import cache
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        from geonode.security.registry import permissions_registry
+
+        def count_for(datasets):
+            # Warm process-level caches (ContentType, Configuration) first so the
+            # measurement reflects per-call DB work, not one-time global cache priming.
+            permissions_registry.get_perms_bulk(datasets, user=self.newcomer, use_cache=False)
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                # The cold per-user-new scenario: a brand-new user, empty perm cache.
+                permissions_registry.get_perms_bulk(datasets, user=self.newcomer, use_cache=True)
+            return len(ctx.captured_queries)
+
+        # Same subtype coverage (raster ds[0] + vector ds[1]) in both slices so the
+        # per-subtype Permission memo doesn't skew the comparison.
+        n_two = count_for(self.datasets[:2])
+        n_all = count_for(self.datasets)
+        print(f"\n[TASK-583] get_perms_bulk queries: 2 datasets={n_two}, {len(self.datasets)} datasets={n_all}")
+        # The whole point (and the primary assertion): serving all N datasets costs the
+        # SAME as serving 2 -- the per-layer Guardian N+1 (~6-9 queries/layer, ~390-585
+        # for a 65-layer map) collapses to a constant independent of N.
+        self.assertEqual(n_all, n_two, "bulk query count must not grow with the number of datasets")
+        # Absolute ceiling: a small constant. The constant is ~12 (not the task's
+        # original ≤5 estimate) because guardian's ObjectPermissionChecker.prefetch_perms
+        # issues a user-perm + group-perm query per content type (dataset + resourcebase).
+        # The latency win comes from the O(N)->O(1) collapse, not from 12-vs-5.
+        self.assertLessEqual(n_all, 13, f"expected a small constant query count, got {n_all}")
+
+    # ---- integration: serializer pre-computes perms in bulk and matches ----
+    def test_serializer_uses_bulk_perms(self):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.request import Request
+        from geonode.security.registry import permissions_registry
+        from geonode.maps.api.serializers import MapSerializer
+
+        the_map = Map.objects.first()
+        the_map.maplayers.all().delete()
+        for ds in self.datasets:
+            MapLayer.objects.create(map=the_map, dataset=ds, name=ds.alternate, local=True)
+
+        django_req = APIRequestFactory().get("/")
+        drf_req = Request(django_req)
+        drf_req.user = self.member
+        serializer = MapSerializer(instance=the_map, context={"request": drf_req})
+        data = serializer.data
+
+        self.assertIn("_bulk_layer_perms", serializer.context)
+        expected = permissions_registry.get_perms_bulk(self.datasets, user=self.member, use_cache=True)
+        layers = {ml["dataset"]["pk"]: ml["dataset"]["perms"] for ml in data["maplayers"] if ml.get("dataset")}
+        for ds in self.datasets:
+            self.assertIn(ds.pk, layers)
+            self.assertEqual(set(layers[ds.pk]), set(expected[ds.pk]))

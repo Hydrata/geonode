@@ -178,6 +178,7 @@ class PermissionsHandlerRegistry:
         use_cache=False,
         group=None,
         permissions={},
+        _prefetch=None,
         *args,
         **kwargs,
     ):
@@ -223,7 +224,7 @@ class PermissionsHandlerRegistry:
                 payload = handler.get_perms(instance, payload, user, include_virtual=include_virtual, *args, **kwargs)
             result = payload
         elif user:
-            payload = {"users": {user: instance.get_user_perms(user)}, "groups": {}}
+            payload = {"users": {user: instance.get_user_perms(user, _prefetch=_prefetch)}, "groups": {}}
             for handler in self.REGISTRY:
                 payload = handler.get_perms(instance, payload, user, include_virtual=include_virtual, *args, **kwargs)
             if include_user_add_resource and user.has_perm("base.add_resourcebase"):
@@ -251,6 +252,62 @@ class PermissionsHandlerRegistry:
             pass
 
         return result
+
+    def get_perms_bulk(self, instances, user=None, use_cache=True):
+        """
+        Bulk-compute the per-resource permission list for a single ``user`` across
+        many ``instances`` in a handful of constant queries instead of the per-layer
+        Guardian/Postgres N+1 that ``get_perms`` incurs when called in a loop.
+
+        Returns a ``{instance.pk: perms_list}`` dict where each value is identical to
+        ``get_perms(instance, user=user, use_cache=True)`` -- parity is enforced by
+        ``geonode/maps/api/tests.py``. Already-cached resources are served from the
+        per-resource cache and excluded from the prefetch; freshly-computed resources
+        are written back under the same ``_get_cache_key`` keys, so single-resource
+        lookups elsewhere keep hitting cache. Primary consumer: the map-blob
+        serializer (``MapSerializer.to_representation``).
+        """
+        instances = list(instances)
+        real_user = get_anonymous_user() if isinstance(user, DjangoAnonymousUser) else user
+
+        # Resolve the per-resource cache-key user identifier ONCE. _get_cache_key calls
+        # get_anonymous_user() (a DB hit) on every invocation, so calling it per resource
+        # would re-introduce an O(N) query; the identifier is identical for every
+        # resource of a single user, and the f-string matches _get_cache_key's format.
+        user_identifier = None
+        if use_cache and real_user is not None:
+            if (
+                real_user.is_anonymous
+                or getattr(real_user, "username", None) == "AnonymousUser"
+                or real_user == get_anonymous_user()
+            ):
+                user_identifier = "anonymous"
+            else:
+                user_identifier = f"user:{real_user.pk}"
+
+        results = {}
+        pending = []
+        for instance in instances:
+            cached = cache.get(f"resource_perms:{instance.pk}:{user_identifier}") if user_identifier else None
+            if cached is not None:
+                results[instance.pk] = cached
+            else:
+                pending.append(instance)
+
+        # Compute the cache-miss resources from prefetched bulk data (use_cache=False so
+        # the inner get_perms does no per-resource cache-key work), then write each result
+        # back under the canonical key so single-resource lookups elsewhere keep hitting.
+        prefetch = _BulkPermPrefetch(pending, real_user) if pending else None
+        for instance in pending:
+            perms = self.get_perms(instance, user=user, use_cache=False, _prefetch=prefetch)
+            results[instance.pk] = perms
+            if user_identifier:
+                cache.set(
+                    f"resource_perms:{instance.pk}:{user_identifier}",
+                    perms,
+                    settings.PERMISSION_CACHE_EXPIRATION_TIME,
+                )
+        return results
 
     def get_visible_resources(
         self,
@@ -514,6 +571,89 @@ class PermissionsHandlerRegistry:
                 cache_keys.append(f"resource_perms:{pk}:__ALL__")
 
         return cache_keys if len(cache_keys) > 1 else cache_keys[0] if cache_keys else None
+
+
+class _BulkPermPrefetch:
+    """
+    Prefetched bulk-permission data for ``PermissionsHandlerRegistry.get_perms_bulk``
+    (one user, many resources). Built once per bulk call; its methods are consumed by
+    ``PermissionLevelMixin.get_user_perms(..., _prefetch=self)`` to serve the
+    per-resource Guardian / Permission / ResourceBase lookups from memory.
+
+    All the queries below are CONSTANT (independent of the number of resources):
+    Configuration(0-1, cached), ResourceBase in_bulk(1), Guardian checker prefetch
+    (user+group object-perms in 1-2), direct user-object-perms(1), the global set of
+    assigned user-object-perm codenames(1), and a memoised Permission-codename lookup
+    (1-2). The legacy loop issued ~6-9 of these PER resource.
+    """
+
+    def __init__(self, instances, user):
+        from guardian.core import ObjectPermissionChecker
+        from guardian.utils import get_user_obj_perms_model
+        from geonode.base.models import Configuration, ResourceBase
+
+        self.user = user
+        self.config_read_only = Configuration.load().read_only
+        self._perm_codename_cache = {}
+
+        # The caller (the map-blob serializer) passes leaf/real instances, so we use
+        # them as-is for the real-instance map rather than calling get_real_instance()
+        # per object (that would re-introduce an O(N) polymorphic query). For a Dataset
+        # the MTI parent shares the pk (Dataset.pk == ResourceBase.pk), so one in_bulk
+        # over the pks resolves every get_self_resource() target.
+        self._real_by_pk = {instance.pk: instance for instance in instances}
+        pks = list(self._real_by_pk.keys())
+        self._rb_by_pk = ResourceBase.objects.in_bulk(pks) if pks else {}
+
+        # Guardian object-permission checker, prefetched per content type. guardian's
+        # prefetch_perms derives ONE model/ctype from the batch, so the resources and
+        # their ResourceBases must be prefetched in separate (homogeneous) calls; the
+        # checker cache is keyed by (ctype_id, pk) so the two ctypes coexist.
+        self.checker = ObjectPermissionChecker(user)
+        dataset_objs = list(self._real_by_pk.values())
+        rb_objs = list(self._rb_by_pk.values())
+        if dataset_objs:
+            self.checker.prefetch_perms(dataset_objs)
+        if rb_objs:
+            self.checker.prefetch_perms(rb_objs)
+
+        # Direct user-object-perm codenames keyed by (content_type_id, object_pk str),
+        # plus the global set of codenames that exist as ANY user-object-perm (the
+        # legacy union's unfiltered second term collapses to this intersection).
+        UOP = get_user_obj_perms_model(ResourceBase)
+        self._direct = {}
+        if user is not None and pks:
+            rows = UOP.objects.filter(user=user, object_pk__in=[str(pk) for pk in pks]).values_list(
+                "content_type_id", "object_pk", "permission__codename"
+            )
+            for ct_id, object_pk, codename in rows:
+                self._direct.setdefault((ct_id, object_pk), set()).add(codename)
+        self.global_user_obj_perm_codenames = set(UOP.objects.values_list("permission__codename", flat=True).distinct())
+
+    def self_resource(self, instance):
+        return self._rb_by_pk.get(instance.pk, instance)
+
+    def real_instance(self, instance):
+        return self._real_by_pk.get(instance.pk, instance)
+
+    def direct_user_codenames(self, instance_pk, ctype_ids):
+        object_pk = str(instance_pk)
+        out = set()
+        for ct_id in ctype_ids:
+            out |= self._direct.get((ct_id, object_pk), set())
+        return out
+
+    def permission_codenames(self, perms_to_fetch, ctype_ids):
+        from django.contrib.auth.models import Permission
+
+        key = (tuple(perms_to_fetch), tuple(sorted(set(ctype_ids))))
+        if key not in self._perm_codename_cache:
+            self._perm_codename_cache[key] = set(
+                Permission.objects.filter(codename__in=perms_to_fetch, content_type_id__in=ctype_ids).values_list(
+                    "codename", flat=True
+                )
+            )
+        return self._perm_codename_cache[key]
 
 
 permissions_registry = PermissionsHandlerRegistry()

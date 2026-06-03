@@ -127,14 +127,20 @@ class MapLayerDatasetSerializer(DynamicModelSerializer):
     def get_perms(self, instance):
         """
         Returns the permissions for the dataset instance using  cache.
+
+        On the map-blob path the perms are pre-computed in one bulk pass by
+        ``MapSerializer.to_representation`` and injected via
+        ``context['_bulk_layer_perms']`` (a ``{dataset_pk: perms}`` dict); when
+        that is present we read from it, otherwise we fall back to the
+        per-resource cached lookup.
         """
         request = self.context.get("request")
-        permissions = (
-            permissions_registry.get_perms(instance=instance, user=request.user, use_cache=True)
-            if request and request.user and instance
-            else []
-        )
-        return permissions
+        if not (request and request.user and instance):
+            return []
+        bulk_layer_perms = self.context.get("_bulk_layer_perms")
+        if bulk_layer_perms is not None and instance.pk in bulk_layer_perms:
+            return bulk_layer_perms[instance.pk]
+        return permissions_registry.get_perms(instance=instance, user=request.user, use_cache=True)
 
 
 class MapLayerSerializer(DynamicModelSerializer):
@@ -164,6 +170,30 @@ class SimpleMapLayerSerializer(serializers.ModelSerializer):
 
 class MapSerializer(ResourceBaseSerializer):
     maplayers = DynamicFullyEmbedM2MRelationField(MapLayerSerializer, deferred=False)
+
+    def to_representation(self, instance):
+        """
+        Pre-compute every embedded layer's permissions in ONE bulk pass before the
+        nested ``MapLayerDatasetSerializer`` instances run, eliminating the per-layer
+        Guardian N+1 on the cold map-blob path. The result is injected into the shared
+        serializer context as ``{dataset_pk: perms}``; each nested ``get_perms`` reads
+        it (falling back to the per-resource cached lookup if absent).
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if user is not None:
+            datasets = []
+            seen = set()
+            for maplayer in instance.maplayers.all():
+                dataset = maplayer.dataset
+                if dataset is not None and dataset.pk not in seen:
+                    seen.add(dataset.pk)
+                    datasets.append(dataset)
+            if datasets:
+                self.context["_bulk_layer_perms"] = permissions_registry.get_perms_bulk(
+                    datasets, user=user, use_cache=True
+                )
+        return super().to_representation(instance)
 
     class Meta:
         model = Map

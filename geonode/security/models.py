@@ -365,9 +365,19 @@ class PermissionLevelMixin:
                         perm_spec_fixed["groups"][Group.objects.get(name=_group)] = _perms
         return perm_spec_fixed
 
-    def get_user_perms(self, user):
+    def get_user_perms(self, user, _prefetch=None):
         """
         Returns a list of permissions a user has on a given resource.
+
+        ``_prefetch`` is an optional bulk-permission prefetch built by
+        ``permissions_registry.get_perms_bulk(...)``. When supplied, the
+        per-resource Guardian / Permission / ResourceBase lookups are served
+        from prefetched bulk data instead of issuing per-resource queries,
+        collapsing the per-layer N+1 on the map-blob hot path into a handful of
+        constant queries. The computed result is identical to the original
+        (non-prefetched) path -- this is enforced by the parity test in
+        ``geonode/maps/api/tests.py`` -- and ``_prefetch=None`` preserves the
+        exact original behaviour for every existing caller.
         """
 
         def calculate_perms(instance, user):
@@ -375,64 +385,94 @@ class PermissionLevelMixin:
             from geonode.base.models import Configuration
             from geonode.layers.models import Dataset
 
-            config = Configuration.load()
             ctype = ContentType.objects.get_for_model(instance)
-            ctype_resource_base = ContentType.objects.get_for_model(instance.get_self_resource())
+            self_resource = instance.get_self_resource() if _prefetch is None else _prefetch.self_resource(instance)
+            ctype_resource_base = ContentType.objects.get_for_model(self_resource)
+            read_only = Configuration.load().read_only if _prefetch is None else _prefetch.config_read_only
 
             PERMISSIONS_TO_FETCH = VIEW_PERMISSIONS + DOWNLOAD_PERMISSIONS + ADMIN_PERMISSIONS + SERVICE_PERMISSIONS
             # include explicit permissions appliable to "subtype == 'vector'"
 
             if instance.subtype == "raster":
                 PERMISSIONS_TO_FETCH += DATASET_EDIT_STYLE_PERMISSIONS
-            elif isinstance(instance.get_real_instance(), Dataset):
-                # remote layers are included, since https://github.com/GeoNode/geonode/issues/13011
-                # introduces an "optimistic" approach to editing remote layers
-                PERMISSIONS_TO_FETCH += DATASET_ADMIN_PERMISSIONS
+            else:
+                real_instance = instance.get_real_instance() if _prefetch is None else _prefetch.real_instance(instance)
+                if isinstance(real_instance, Dataset):
+                    # remote layers are included, since https://github.com/GeoNode/geonode/issues/13011
+                    # introduces an "optimistic" approach to editing remote layers
+                    PERMISSIONS_TO_FETCH += DATASET_ADMIN_PERMISSIONS
 
-            resource_perms = Permission.objects.filter(
-                codename__in=PERMISSIONS_TO_FETCH, content_type_id__in=[ctype.id, ctype_resource_base.id]
-            ).values_list("codename", flat=True)
+            ctype_ids = [ctype.id, ctype_resource_base.id]
+            if _prefetch is None:
+                resource_perms = Permission.objects.filter(
+                    codename__in=PERMISSIONS_TO_FETCH, content_type_id__in=ctype_ids
+                ).values_list("codename", flat=True)
+            else:
+                resource_perms = _prefetch.permission_codenames(PERMISSIONS_TO_FETCH, ctype_ids)
 
             # Don't filter for admin users
             if not user.is_superuser:
-                user_model = get_user_obj_perms_model(instance)
-                user_resource_perms = user_model.objects.filter(
-                    object_pk=instance.pk,
-                    content_type_id__in=[ctype.id, ctype_resource_base.id],
-                    user__username=str(user),
-                    permission__codename__in=resource_perms,
-                )
-                # get user's implicit perms for anyone flag
-                implicit_perms = get_perms(user, instance)
-                # filter out implicit permissions unappliable to "subtype != 'vector'"
-                if instance.subtype == "raster":
-                    implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
-                elif instance.subtype != "vector":
-                    implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
+                if _prefetch is None:
+                    user_model = get_user_obj_perms_model(instance)
+                    user_resource_perms = user_model.objects.filter(
+                        object_pk=instance.pk,
+                        content_type_id__in=ctype_ids,
+                        user__username=str(user),
+                        permission__codename__in=resource_perms,
+                    )
+                    # get user's implicit perms for anyone flag
+                    implicit_perms = get_perms(user, instance)
+                    # filter out implicit permissions unappliable to "subtype != 'vector'"
+                    if instance.subtype == "raster":
+                        implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
+                    elif instance.subtype != "vector":
+                        implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
 
-                resource_perms = user_resource_perms.union(
-                    user_model.objects.filter(permission__codename__in=implicit_perms)
-                ).values_list("permission__codename", flat=True)
+                    resource_perms = user_resource_perms.union(
+                        user_model.objects.filter(permission__codename__in=implicit_perms)
+                    ).values_list("permission__codename", flat=True)
+                else:
+                    # Faithful set-algebra equivalent of the queryset .union() above,
+                    # served entirely from prefetched bulk data (no per-resource query):
+                    #   term1 = direct user-object-perm codenames on this object,
+                    #           restricted to the resource's valid perms;
+                    #   term2 = implicit (user+group+anyone) perms that exist as some
+                    #           UserObjectPermission codename (mirrors the unfiltered
+                    #           second .filter() in the legacy union).
+                    resource_perms_set = set(resource_perms)
+                    term1 = _prefetch.direct_user_codenames(instance.pk, ctype_ids) & resource_perms_set
+                    implicit_perms = list(_prefetch.checker.get_perms(instance))
+                    if instance.subtype == "raster":
+                        implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
+                    elif instance.subtype != "vector":
+                        implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
+                    term2 = set(implicit_perms) & _prefetch.global_user_obj_perm_codenames
+                    resource_perms = term1 | term2
 
             # filter out permissions for edit, change or publish if readonly mode is active
             perm_prefixes = ["change", "delete", "publish"]
-            if config.read_only:
-                clauses = (Q(codename__contains=prefix) for prefix in perm_prefixes)
-                query = reduce(operator.or_, clauses)
-                if user.is_superuser:
-                    resource_perms = resource_perms.exclude(query)
+            if read_only:
+                if _prefetch is not None:
+                    resource_perms = {c for c in resource_perms if not any(p in c for p in perm_prefixes)}
                 else:
-                    perm_objects = Permission.objects.filter(codename__in=resource_perms)
-                    resource_perms = perm_objects.exclude(query).values_list("codename", flat=True)
+                    clauses = (Q(codename__contains=prefix) for prefix in perm_prefixes)
+                    query = reduce(operator.or_, clauses)
+                    if user.is_superuser:
+                        resource_perms = resource_perms.exclude(query)
+                    else:
+                        perm_objects = Permission.objects.filter(codename__in=resource_perms)
+                        resource_perms = perm_objects.exclude(query).values_list("codename", flat=True)
             return resource_perms
 
         perms = calculate_perms(self, user)
 
         if getattr(self, "get_real_instance", None):
-            perms = perms.union(calculate_perms(self.get_real_instance(), user))
+            real = self.get_real_instance() if _prefetch is None else _prefetch.real_instance(self)
+            perms = perms.union(calculate_perms(real, user))
 
         if getattr(self, "get_self_resource", None):
-            perms = perms.union(calculate_perms(self.get_self_resource(), user))
+            self_res = self.get_self_resource() if _prefetch is None else _prefetch.self_resource(self)
+            perms = perms.union(calculate_perms(self_res, user))
 
         perms_as_list = list(set(perms))
 
