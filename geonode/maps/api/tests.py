@@ -20,6 +20,9 @@ import logging
 from urllib.parse import urljoin
 
 from django.conf import settings
+from django.core.cache import cache
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from guardian.shortcuts import assign_perm, get_anonymous_user
@@ -29,6 +32,7 @@ from rest_framework.test import APITestCase
 from geonode.base.populate_test_data import create_models
 from geonode.layers.models import Dataset
 from geonode.maps.models import Map, MapLayer
+from geonode.security.registry import permissions_registry
 
 logger = logging.getLogger(__name__)
 
@@ -554,18 +558,12 @@ class MapLayerPermsBulkTests(APITestCase):
 
     # ---- helpers -------------------------------------------------------------
     def _legacy(self, user):
-        from django.core.cache import cache
-        from geonode.security.registry import permissions_registry
-
         cache.clear()
         return {
             ds.pk: set(permissions_registry.get_perms(instance=ds, user=user, use_cache=False)) for ds in self.datasets
         }
 
     def _bulk(self, user):
-        from django.core.cache import cache
-        from geonode.security.registry import permissions_registry
-
         cache.clear()
         return {
             pk: set(v)
@@ -586,9 +584,6 @@ class MapLayerPermsBulkTests(APITestCase):
 
     # ---- AC#2 + AC#6: per-pk cache writes match _get_cache_key, single lookups hit
     def test_bulk_writes_per_pk_cache_and_single_lookup_hits(self):
-        from django.core.cache import cache
-        from geonode.security.registry import permissions_registry
-
         cache.clear()
         bulk = permissions_registry.get_perms_bulk(self.datasets, user=self.member, use_cache=True)
         for ds in self.datasets:
@@ -598,18 +593,12 @@ class MapLayerPermsBulkTests(APITestCase):
             # A subsequent single-resource lookup is served from cache: it must NOT
             # recompute perms. (One residual query is the get_anonymous_user() lookup
             # inside the pre-existing _get_cache_key; the perms themselves are cached.)
-            from django.test.utils import CaptureQueriesContext
-            from django.db import connection
-
             with CaptureQueriesContext(connection) as ctx:
                 cached_perms = permissions_registry.get_perms(instance=ds, user=self.member, use_cache=True)
             self.assertLessEqual(len(ctx.captured_queries), 1)
             self.assertEqual(set(cached_perms), set(bulk[ds.pk]))
 
     def test_bulk_writes_anonymous_cache_key(self):
-        from django.core.cache import cache
-        from geonode.security.registry import permissions_registry
-
         cache.clear()
         permissions_registry.get_perms_bulk(self.datasets, user=self.anon, use_cache=True)
         for ds in self.datasets:
@@ -619,11 +608,6 @@ class MapLayerPermsBulkTests(APITestCase):
 
     # ---- AC#1: query count is small and CONSTANT (does not grow with layer count)
     def test_bulk_query_count_is_constant(self):
-        from django.core.cache import cache
-        from django.test.utils import CaptureQueriesContext
-        from django.db import connection
-        from geonode.security.registry import permissions_registry
-
         def count_for(datasets):
             # Warm process-level caches (ContentType, Configuration) first so the
             # measurement reflects per-call DB work, not one-time global cache priming.
@@ -653,7 +637,6 @@ class MapLayerPermsBulkTests(APITestCase):
     def test_serializer_uses_bulk_perms(self):
         from rest_framework.test import APIRequestFactory
         from rest_framework.request import Request
-        from geonode.security.registry import permissions_registry
         from geonode.maps.api.serializers import MapSerializer
 
         the_map = Map.objects.first()
@@ -673,3 +656,84 @@ class MapLayerPermsBulkTests(APITestCase):
         for ds in self.datasets:
             self.assertIn(ds.pk, layers)
             self.assertEqual(set(layers[ds.pk]), set(expected[ds.pk]))
+
+    # ---- parity edge cases (regression guards for the subtlest lines) ---------
+    def _assert_parity(self, user, datasets):
+        cache.clear()
+        legacy = {
+            ds.pk: set(permissions_registry.get_perms(instance=ds, user=user, use_cache=False)) for ds in datasets
+        }
+        cache.clear()
+        bulk = {
+            pk: set(v) for pk, v in permissions_registry.get_perms_bulk(datasets, user=user, use_cache=False).items()
+        }
+        self.assertEqual(bulk, legacy)
+        return bulk
+
+    def test_parity_group_only_implicit_perm(self):
+        # Guards the term2 set-algebra: a perm held SOLELY via a group, both when its
+        # codename is absent from every UserObjectPermission row and when it exists on
+        # an unrelated UOP row. Both must match legacy (which has the same UOP-gate).
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        u = get_user_model().objects.create_user("bulk_grp_only", "g@t.com", "pw")
+        g = Group.objects.create(name="bulk_grp_only_g")
+        u.groups.add(g)
+        ds = self.datasets[-1]
+        assign_perm("download_resourcebase", g, ds.get_self_resource())
+        self._assert_parity(u, [ds])  # codename absent from all UOP rows
+        assign_perm("download_resourcebase", self.member, self.datasets[1].get_self_resource())
+        self._assert_parity(u, [ds, self.datasets[1]])  # now present on an unrelated UOP row
+
+    def test_parity_read_only_mode(self):
+        from geonode.base.models import Configuration
+
+        config = Configuration.load()
+        config.read_only = True
+        config.save()
+        try:
+            for user in (self.member, self.superuser, self.anon):
+                with self.subTest(user=str(user)):
+                    self._assert_parity(user, self.datasets)
+        finally:
+            config.read_only = False
+            config.save()
+
+    def test_parity_non_vector_raster_subtypes(self):
+        for subtype in ("remote", None):
+            Dataset.objects.filter(pk=self.datasets[2].pk).update(subtype=subtype)
+            ds = Dataset.objects.get(pk=self.datasets[2].pk)
+            assign_perm("change_dataset_data", self.member, ds)
+            assign_perm("change_dataset_style", self.member, ds)
+            with self.subTest(subtype=subtype):
+                self._assert_parity(self.member, [ds])
+
+    def test_parity_raster_implicit_group_change_data(self):
+        from django.contrib.auth.models import Group
+
+        ds = self.datasets[0]  # raster (set in setUpTestData)
+        g = Group.objects.create(name="bulk_raster_g")
+        self.member.groups.add(g)
+        assign_perm("change_dataset_data", g, ds)  # implicit on a raster -> subtype-filtered
+        self._assert_parity(self.member, [ds])
+
+    def test_non_leaf_input_never_over_grants(self):
+        # CONTRACT (F1): get_perms_bulk expects leaf Dataset instances. A base
+        # ResourceBase row is unsupported; if one is ever passed it must NEVER grant
+        # MORE than the leaf (fail-safe under-grant, never a leak). Pins the leaf
+        # assumption in _BulkPermPrefetch so a future caller change can't silently leak.
+        from geonode.base.models import ResourceBase
+
+        assign_perm("change_dataset_data", self.member, self.datasets[1])
+        assign_perm("view_resourcebase", self.member, self.datasets[1].get_self_resource())
+        rb = ResourceBase.objects.get(pk=self.datasets[1].pk)
+        cache.clear()
+        leaf = set(
+            permissions_registry.get_perms_bulk([self.datasets[1]], user=self.member, use_cache=False)[
+                self.datasets[1].pk
+            ]
+        )
+        cache.clear()
+        nonleaf = set(permissions_registry.get_perms_bulk([rb], user=self.member, use_cache=False)[rb.pk])
+        self.assertTrue(nonleaf.issubset(leaf), f"non-leaf input over-granted: {nonleaf - leaf}")

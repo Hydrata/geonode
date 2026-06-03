@@ -412,6 +412,21 @@ class PermissionLevelMixin:
 
             # Don't filter for admin users
             if not user.is_superuser:
+                # User's implicit (user+group+anyone) perms, then drop the ones
+                # inapplicable to this subtype. Identical for both data sources; only
+                # the source of the raw implicit perms differs (live guardian shortcut
+                # vs the prefetched checker). user_resource_perms below is a lazy
+                # queryset, so computing implicit_perms first leaves the legacy query
+                # execution order unchanged.
+                if _prefetch is None:
+                    implicit_perms = get_perms(user, instance)
+                else:
+                    implicit_perms = list(_prefetch.checker.get_perms(instance))
+                if instance.subtype == "raster":
+                    implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
+                elif instance.subtype != "vector":
+                    implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
+
                 if _prefetch is None:
                     user_model = get_user_obj_perms_model(instance)
                     user_resource_perms = user_model.objects.filter(
@@ -420,14 +435,6 @@ class PermissionLevelMixin:
                         user__username=str(user),
                         permission__codename__in=resource_perms,
                     )
-                    # get user's implicit perms for anyone flag
-                    implicit_perms = get_perms(user, instance)
-                    # filter out implicit permissions unappliable to "subtype != 'vector'"
-                    if instance.subtype == "raster":
-                        implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
-                    elif instance.subtype != "vector":
-                        implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
-
                     resource_perms = user_resource_perms.union(
                         user_model.objects.filter(permission__codename__in=implicit_perms)
                     ).values_list("permission__codename", flat=True)
@@ -436,16 +443,10 @@ class PermissionLevelMixin:
                     # served entirely from prefetched bulk data (no per-resource query):
                     #   term1 = direct user-object-perm codenames on this object,
                     #           restricted to the resource's valid perms;
-                    #   term2 = implicit (user+group+anyone) perms that exist as some
-                    #           UserObjectPermission codename (mirrors the unfiltered
-                    #           second .filter() in the legacy union).
+                    #   term2 = implicit perms that exist as some UserObjectPermission
+                    #           codename (mirrors the unfiltered 2nd .filter() in legacy).
                     resource_perms_set = set(resource_perms)
                     term1 = _prefetch.direct_user_codenames(instance.pk, ctype_ids) & resource_perms_set
-                    implicit_perms = list(_prefetch.checker.get_perms(instance))
-                    if instance.subtype == "raster":
-                        implicit_perms = list(set(implicit_perms) - set(DATASET_EDIT_DATA_PERMISSIONS))
-                    elif instance.subtype != "vector":
-                        implicit_perms = list(set(implicit_perms) - set(DATASET_ADMIN_PERMISSIONS))
                     term2 = set(implicit_perms) & _prefetch.global_user_obj_perm_codenames
                     resource_perms = term1 | term2
 

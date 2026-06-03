@@ -266,29 +266,25 @@ class PermissionsHandlerRegistry:
         are written back under the same ``_get_cache_key`` keys, so single-resource
         lookups elsewhere keep hitting cache. Primary consumer: the map-blob
         serializer (``MapSerializer.to_representation``).
+
+        CONTRACT: ``instances`` must be leaf/real resources (e.g. ``Dataset`` FK
+        objects, as the serializer passes), NOT un-upcast base ``ResourceBase`` rows.
+        The prefetch resolves ``get_real_instance()`` from the passed objects to avoid
+        an O(N) polymorphic query; a base ``ResourceBase`` passed directly would miss
+        its leaf's subtype perms (fail-safe under-grant). See test_non_leaf_* below.
         """
         instances = list(instances)
         real_user = get_anonymous_user() if isinstance(user, DjangoAnonymousUser) else user
 
-        # Resolve the per-resource cache-key user identifier ONCE. _get_cache_key calls
-        # get_anonymous_user() (a DB hit) on every invocation, so calling it per resource
-        # would re-introduce an O(N) query; the identifier is identical for every
-        # resource of a single user, and the f-string matches _get_cache_key's format.
-        user_identifier = None
-        if use_cache and real_user is not None:
-            if (
-                real_user.is_anonymous
-                or getattr(real_user, "username", None) == "AnonymousUser"
-                or real_user == get_anonymous_user()
-            ):
-                user_identifier = "anonymous"
-            else:
-                user_identifier = f"user:{real_user.pk}"
+        # Resolve the cache-key user identifier ONCE (shared with _get_cache_key, which
+        # calls get_anonymous_user() -- a DB hit -- per user; resolving it once here keeps
+        # the cache reads/writes O(1) in the number of resources).
+        user_identifier = self._user_cache_identifier(real_user) if (use_cache and real_user is not None) else None
 
         results = {}
         pending = []
         for instance in instances:
-            cached = cache.get(f"resource_perms:{instance.pk}:{user_identifier}") if user_identifier else None
+            cached = cache.get(self._resource_user_cache_key(instance.pk, user_identifier)) if user_identifier else None
             if cached is not None:
                 results[instance.pk] = cached
             else:
@@ -303,7 +299,7 @@ class PermissionsHandlerRegistry:
             results[instance.pk] = perms
             if user_identifier:
                 cache.set(
-                    f"resource_perms:{instance.pk}:{user_identifier}",
+                    self._resource_user_cache_key(instance.pk, user_identifier),
                     perms,
                     settings.PERMISSION_CACHE_EXPIRATION_TIME,
                 )
@@ -542,6 +538,18 @@ class PermissionsHandlerRegistry:
             else:
                 raise TypeError(f"Expected str or list, got {type(cache_keys)}")
 
+    @staticmethod
+    def _user_cache_identifier(user):
+        """The cache-key fragment identifying a user: ``anonymous`` or ``user:{pk}``."""
+        if user.is_anonymous or user.username == "AnonymousUser" or user == get_anonymous_user():
+            return "anonymous"
+        return f"user:{user.pk}"
+
+    @staticmethod
+    def _resource_user_cache_key(pk, user_identifier):
+        """Canonical per-resource, per-user cache key (single source of the format)."""
+        return f"resource_perms:{pk}:{user_identifier}"
+
     def _get_cache_key(self, resource_pks, users=None, groups=None, remove_all_cache=False):
         """
         Generate cache keys for resource permissions.
@@ -556,12 +564,7 @@ class PermissionsHandlerRegistry:
         for pk in resource_pks:
             if users:
                 for user in users:
-                    user_identifier = (
-                        "anonymous"
-                        if user.is_anonymous or user.username == "AnonymousUser" or user == get_anonymous_user()
-                        else f"user:{user.pk}"
-                    )
-                    cache_keys.append(f"resource_perms:{pk}:{user_identifier}")
+                    cache_keys.append(self._resource_user_cache_key(pk, self._user_cache_identifier(user)))
 
             if groups:
                 for group in groups:

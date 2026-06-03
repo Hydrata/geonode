@@ -182,16 +182,17 @@ class MapSerializer(ResourceBaseSerializer):
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
         if user is not None:
-            datasets = []
-            seen = set()
-            for maplayer in instance.maplayers.all():
-                dataset = maplayer.dataset
-                if dataset is not None and dataset.pk not in seen:
-                    seen.add(dataset.pk)
-                    datasets.append(dataset)
+            # select_related("dataset") so materialising the layers' datasets doesn't
+            # itself fan out into a per-layer FK query (a local fix; the task forbids
+            # prefetch_related on the MapViewSet queryset). Dedup by pk (order-preserving).
+            datasets = {
+                maplayer.dataset.pk: maplayer.dataset
+                for maplayer in instance.maplayers.select_related("dataset").all()
+                if maplayer.dataset is not None
+            }
             if datasets:
                 self.context["_bulk_layer_perms"] = permissions_registry.get_perms_bulk(
-                    datasets, user=user, use_cache=True
+                    list(datasets.values()), user=user, use_cache=True
                 )
         return super().to_representation(instance)
 
