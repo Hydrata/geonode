@@ -22,6 +22,7 @@ from urllib.parse import urljoin
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -29,7 +30,7 @@ from guardian.shortcuts import assign_perm, get_anonymous_user
 from mock import patch
 from rest_framework.test import APITestCase
 
-from geonode.base.populate_test_data import create_models
+from geonode.base.populate_test_data import create_models, create_single_dataset
 from geonode.layers.models import Dataset
 from geonode.maps.models import Map, MapLayer
 from geonode.security.registry import permissions_registry
@@ -607,7 +608,49 @@ class MapLayerPermsBulkTests(APITestCase):
             self.assertIsNotNone(cache.get(key), f"missing anonymous cache entry for ds {ds.pk}")
 
     # ---- AC#1: query count is small and CONSTANT (does not grow with layer count)
+    @override_settings(DEFAULT_ANONYMOUS_VIEW_PERMISSION=False, DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION=False)
     def test_bulk_query_count_is_constant(self):
+        # The gate only means "Guardian N+1 collapsed to O(1)" if the measured user is
+        # genuinely cold (zero perms). get_perms_bulk collapses ONLY the Guardian
+        # object-permission N+1; the per-resource feature/handler tail in get_user_perms
+        # (can_feature/approve/publish + GroupManagersPermissionsHandler ->
+        # user_is_manager_of_group) is NOT prefetched, exists in the legacy path too, and
+        # fires once per resource whenever the user's perm list is non-empty -> the count
+        # would grow with N and the gate would (falsely) fail.
+        #
+        # Under hydrata.local_settings DEFAULT_ANONYMOUS_VIEW_PERMISSION=True (the canonical
+        # sandbox test command's setting), create_models()/set_default_permissions grants the
+        # anonymous group view_resourcebase, so even `newcomer` sees `view` and the tail
+        # fires (26 queries for 2 datasets, 68 for 8). So we DON'T reuse the setUpTestData
+        # datasets here -- those already carry the anonymous grant in the DB and a method-level
+        # override can't retract it. Instead we build a fresh pool *inside* this method, after
+        # the override is in effect, with perms reset to owner-only. Mirrors TASK-1444's
+        # ResourceBasePermsBulkTests. See memory/perms-bulk-constant-query-needs-anon-view-off.md.
+        def make_pool(n):
+            owner = self.superuser
+            datasets = []
+            for i in range(n):
+                ds_vec = create_single_dataset(f"qc_vec_{n}_{i}", owner=owner)
+                ds_ras = create_single_dataset(f"qc_ras_{n}_{i}", owner=owner)
+                # Exercise the raster perm branch (bypass signals via .update()), matching
+                # setUpTestData, so the per-subtype Permission memo is primed in both slices.
+                Dataset.objects.filter(pk=ds_ras.pk).update(subtype="raster")
+                datasets.extend([ds_vec, ds_ras])
+            for ds in datasets:
+                ds.set_permissions({"users": {owner: ["view_resourcebase"]}, "groups": {}})
+            return list(Dataset.objects.filter(pk__in=[d.pk for d in datasets]).order_by("pk"))
+
+        small = make_pool(1)  # 2 datasets (1 vector + 1 raster)
+        large = make_pool(3)  # 6 datasets (3 vector + 3 raster) -- same subtypes, only N differs
+        # Sanity: the newcomer must be genuinely cold (no perms) for the gate to mean what
+        # it claims; if a default grant leaks in, fail loudly here rather than silently
+        # measuring the handler tail instead of the Guardian collapse.
+        self.assertEqual(
+            permissions_registry.get_perms(instance=small[0], user=self.newcomer, use_cache=False),
+            [],
+            "newcomer must have zero perms for the constant-query gate",
+        )
+
         def count_for(datasets):
             # Warm process-level caches (ContentType, Configuration) first so the
             # measurement reflects per-call DB work, not one-time global cache priming.
@@ -618,11 +661,9 @@ class MapLayerPermsBulkTests(APITestCase):
                 permissions_registry.get_perms_bulk(datasets, user=self.newcomer, use_cache=True)
             return len(ctx.captured_queries)
 
-        # Same subtype coverage (raster ds[0] + vector ds[1]) in both slices so the
-        # per-subtype Permission memo doesn't skew the comparison.
-        n_two = count_for(self.datasets[:2])
-        n_all = count_for(self.datasets)
-        print(f"\n[TASK-583] get_perms_bulk queries: 2 datasets={n_two}, {len(self.datasets)} datasets={n_all}")
+        n_two = count_for(small)
+        n_all = count_for(large)
+        print(f"\n[TASK-583] get_perms_bulk queries: {len(small)} datasets={n_two}, {len(large)} datasets={n_all}")
         # The whole point (and the primary assertion): serving all N datasets costs the
         # SAME as serving 2 -- the per-layer Guardian N+1 (~6-9 queries/layer, ~390-585
         # for a 65-layer map) collapses to a constant independent of N.
