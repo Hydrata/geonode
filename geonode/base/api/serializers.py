@@ -73,11 +73,50 @@ from geonode.security.registry import permissions_registry
 
 logger = logging.getLogger(__name__)
 
+# Shared serializer-context key holding the pre-computed ``{resource_pk: perms}`` dict
+# for a bulk perms pass. Used by both ``ResourceBaseSerializer.get_perms`` (resource
+# LIST endpoints) and ``MapSerializer`` (map-blob embedded layers, TASK-583) so the two
+# call sites reference one constant instead of a duplicated literal. The value is kept
+# as the historical ``_bulk_layer_perms`` so neither contract changes.
+BULK_PERMS_CONTEXT_KEY = "_bulk_layer_perms"
+
 
 def user_serializer():
     import geonode.people.api.serializers as ser
 
     return ser.UserSerializer
+
+
+def _real_instances(instances):
+    """
+    Upcast a list of (possibly base) ``ResourceBase`` rows to their leaf instances in
+    bulk. The generic resource-LIST endpoints (e.g. ``/api/v2/resources``) serve
+    NON-polymorphic base rows, while ``permissions_registry.get_perms_bulk`` requires
+    leaf instances (a base row under-grants its leaf's subtype perms, fail-safe).
+    Already-leaf instances (per-type endpoints pass ``Dataset``/``Document``/... rows)
+    are returned untouched. Upcasting costs one query per distinct leaf content type --
+    constant in the number of resources.
+    """
+    instances = list(instances)
+    base_rows = [i for i in instances if type(i) is ResourceBase]
+    leaves = [i for i in instances if type(i) is not ResourceBase]
+    if base_rows:
+        leaves += list(ResourceBase.objects.get_real_instances(base_rows))
+    return leaves
+
+
+def build_bulk_resource_perms(instances, user):
+    """
+    Bulk-compute ``{resource_pk: perms}`` for a page of resources in a constant number
+    of queries (independent of N), reusing ``permissions_registry.get_perms_bulk``.
+    This is the resource-LIST generalisation of the map-blob bulk pass delivered in
+    TASK-583 -- it collapses the per-resource Guardian N+1 that ``get_perms`` incurs
+    when called once per row on a list endpoint.
+    """
+    leaves = _real_instances(instances)
+    if not leaves:
+        return {}
+    return permissions_registry.get_perms_bulk(leaves, user=user, use_cache=True)
 
 
 class BaseDynamicModelSerializer(DynamicModelSerializer):
@@ -803,14 +842,39 @@ class ResourceBaseSerializer(DynamicModelSerializer):
     def get_perms(self, instance):
         """
         Returns the permissions for the resource instance using Django cache.
+
+        On a resource-LIST render the perms for the WHOLE page are computed in ONE bulk
+        pass the first time this runs and injected into the shared serializer context as
+        ``{resource_pk: perms}`` under ``BULK_PERMS_CONTEXT_KEY`` -- the same contract
+        the map-blob serializer uses for embedded layers (TASK-583) -- so every later
+        row is a dict lookup instead of a per-resource Guardian N+1. A single-object
+        (detail) render has no sibling page, so it falls through to the per-resource
+        cached lookup unchanged; the same fallback covers any pk the bulk did not cover.
         """
         request = self.context.get("request")
-        permissions = (
-            permissions_registry.get_perms(instance=instance, user=request.user, use_cache=True)
-            if request and request.user and instance
-            else []
-        )
-        return permissions
+        user = getattr(request, "user", None) if request else None
+        if not (request and user and instance):
+            return []
+        bulk = self.context.get(BULK_PERMS_CONTEXT_KEY)
+        if bulk is None:
+            page = self._bulk_perms_page()
+            if page:
+                bulk = build_bulk_resource_perms(page, user)
+                self.context[BULK_PERMS_CONTEXT_KEY] = bulk
+        if bulk and instance.pk in bulk:
+            return bulk[instance.pk]
+        return permissions_registry.get_perms(instance=instance, user=user, use_cache=True)
+
+    def _bulk_perms_page(self):
+        """
+        The sibling instances when this serializer renders inside a list (``many=True``)
+        -- the page over which perms can be bulk-computed -- or ``None`` for a single
+        object render (so detail endpoints keep the unchanged per-resource path).
+        """
+        parent = self.parent
+        if isinstance(parent, serializers.ListSerializer) and parent.instance is not None:
+            return list(parent.instance)
+        return None
 
     def save(self, **kwargs):
         extent = self.validated_data.pop("extent", None)

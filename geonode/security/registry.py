@@ -16,6 +16,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+from collections import defaultdict
 from django.conf import settings
 from django.utils.module_loading import import_string
 from geonode.security.handlers import BasePermissionsHandler
@@ -272,6 +273,9 @@ class PermissionsHandlerRegistry:
         The prefetch resolves ``get_real_instance()`` from the passed objects to avoid
         an O(N) polymorphic query; a base ``ResourceBase`` passed directly would miss
         its leaf's subtype perms (fail-safe under-grant). See test_non_leaf_* below.
+        The list may be POLYMORPHIC (mixed ``Dataset``/``Map``/``Document``/... leaves,
+        as a resource-LIST endpoint passes); ``_BulkPermPrefetch`` groups the guardian
+        prefetch per leaf content type so every type is cached correctly.
         """
         instances = list(instances)
         real_user = get_anonymous_user() if isinstance(user, DjangoAnonymousUser) else user
@@ -599,24 +603,28 @@ class _BulkPermPrefetch:
         self.config_read_only = Configuration.load().read_only
         self._perm_codename_cache = {}
 
-        # The caller (the map-blob serializer) passes leaf/real instances, so we use
-        # them as-is for the real-instance map rather than calling get_real_instance()
-        # per object (that would re-introduce an O(N) polymorphic query). For a Dataset
-        # the MTI parent shares the pk (Dataset.pk == ResourceBase.pk), so one in_bulk
-        # over the pks resolves every get_self_resource() target.
+        # The caller passes leaf/real instances, so we use them as-is for the
+        # real-instance map rather than calling get_real_instance() per object (that
+        # would re-introduce an O(N) polymorphic query). For any ResourceBase subtype
+        # the MTI parent shares the pk (leaf.pk == ResourceBase.pk), so one in_bulk over
+        # the pks resolves every get_self_resource() target -- across mixed leaf types.
         self._real_by_pk = {instance.pk: instance for instance in instances}
         pks = list(self._real_by_pk.keys())
         self._rb_by_pk = ResourceBase.objects.in_bulk(pks) if pks else {}
 
         # Guardian object-permission checker, prefetched per content type. guardian's
-        # prefetch_perms derives ONE model/ctype from the batch, so the resources and
-        # their ResourceBases must be prefetched in separate (homogeneous) calls; the
-        # checker cache is keyed by (ctype_id, pk) so the two ctypes coexist.
+        # prefetch_perms derives ONE model/ctype from the batch (objects[0]), so each
+        # homogeneous group must be prefetched separately: one batch per distinct leaf
+        # model (a polymorphic resource list mixes Dataset/Map/Document/...) PLUS one
+        # batch for their ResourceBases. The checker cache is keyed by (ctype_id, pk),
+        # so every ctype coexists. Grouping by __class__ keeps this constant in N.
         self.checker = ObjectPermissionChecker(user)
-        dataset_objs = list(self._real_by_pk.values())
+        leaf_by_model = defaultdict(list)
+        for obj in self._real_by_pk.values():
+            leaf_by_model[obj.__class__].append(obj)
+        for objs in leaf_by_model.values():
+            self.checker.prefetch_perms(objs)
         rb_objs = list(self._rb_by_pk.values())
-        if dataset_objs:
-            self.checker.prefetch_perms(dataset_objs)
         if rb_objs:
             self.checker.prefetch_perms(rb_objs)
 

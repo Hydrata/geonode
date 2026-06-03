@@ -24,6 +24,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ParseError, ValidationError
 
 from geonode.base.api.serializers import (
+    BULK_PERMS_CONTEXT_KEY,
     DetailUrlField,
     BaseDynamicModelSerializer,
     ResourceBaseSerializer,
@@ -137,7 +138,7 @@ class MapLayerDatasetSerializer(DynamicModelSerializer):
         request = self.context.get("request")
         if not (request and request.user and instance):
             return []
-        bulk_layer_perms = self.context.get("_bulk_layer_perms")
+        bulk_layer_perms = self.context.get(BULK_PERMS_CONTEXT_KEY)
         if bulk_layer_perms is not None and instance.pk in bulk_layer_perms:
             return bulk_layer_perms[instance.pk]
         return permissions_registry.get_perms(instance=instance, user=request.user, use_cache=True)
@@ -191,7 +192,7 @@ class MapSerializer(ResourceBaseSerializer):
                 if maplayer.dataset is not None
             }
             if datasets:
-                self.context["_bulk_layer_perms"] = permissions_registry.get_perms_bulk(
+                self.context[BULK_PERMS_CONTEXT_KEY] = permissions_registry.get_perms_bulk(
                     list(datasets.values()), user=user, use_cache=True
                 )
         return super().to_representation(instance)

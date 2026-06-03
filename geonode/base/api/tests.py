@@ -4238,3 +4238,201 @@ class MapCachingTest(GeoNodeBaseTestSupport):
         # Check that the permissions in the layers are the same
         for layer1, layer2 in zip(data1["map"]["maplayers"], data2["map"]["maplayers"]):
             self.assertEqual(layer1["dataset"]["perms"], layer2["dataset"]["perms"])
+
+
+class ResourceBasePermsBulkTests(APITestCase):
+    """
+    TASK-1444: parity + constant-query gate for the resource-LIST bulk perms pass
+    (``ResourceBaseSerializer.get_perms`` -> ``build_bulk_resource_perms`` ->
+    ``permissions_registry.get_perms_bulk``) -- the generalisation of TASK-583's
+    map-blob fix to the POLYMORPHIC resource-list endpoints (``/api/v2/resources`` &
+    friends), which serve mixed Dataset/Map/Document leaf types as base ResourceBase
+    rows.
+
+    The optimisation MUST return exactly what the legacy per-resource path returns for
+    every user class AND across mixed resource types; these tests are that contract.
+    Mirrors geonode.maps.api.tests.MapLayerPermsBulkTests.
+    """
+
+    fixtures = ["initial_data.json", "group_test_data.json", "default_oauth_apps.json"]
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        User = get_user_model()
+
+        # A MIXED, polymorphic resource set: the generic resource list serves base
+        # ResourceBase rows spanning several leaf content types in one page.
+        cls.datasets = [create_single_dataset(f"bulk_rb_ds_{i}") for i in range(3)]
+        cls.docs = [create_single_doc(f"bulk_rb_doc_{i}") for i in range(2)]
+        cls.maps = [create_single_map(f"bulk_rb_map_{i}") for i in range(2)]
+        # Exercise the raster perm branch on one dataset (bypass signals via .update()).
+        Dataset.objects.filter(pk=cls.datasets[0].pk).update(subtype="raster")
+        cls.datasets = list(Dataset.objects.filter(pk__in=[d.pk for d in cls.datasets]).order_by("pk"))
+        cls.resource_pks = sorted([r.pk for r in (cls.datasets + cls.docs + cls.maps)])
+
+        cls.superuser = User.objects.create_superuser("rb_bulk_su", "su@t.com", "pw")
+        cls.staff = User.objects.create_user("rb_bulk_staff", "st@t.com", "pw", is_staff=True)
+        cls.member = User.objects.create_user("rb_bulk_member", "me@t.com", "pw")
+        # A brand-new user with NO grants: the per-user-cold scenario the optimisation
+        # targets (empty perms -> no can_feature/approve/publish tail queries), used for
+        # the constant-query gate.
+        cls.newcomer = User.objects.create_user("rb_bulk_newcomer", "nc@t.com", "pw")
+        cls.owner = cls.datasets[1].owner
+        cls.anon = get_anonymous_user()
+
+        # Varied grants so the parity comparison spans direct / group / anonymous perms
+        # AND multiple leaf types (dataset + document + map).
+        assign_perm("view_resourcebase", cls.member, cls.datasets[1].get_self_resource())
+        assign_perm("change_dataset_data", cls.member, cls.datasets[1])
+        assign_perm("view_resourcebase", cls.member, cls.docs[0].get_self_resource())
+        assign_perm("view_resourcebase", cls.anon, cls.maps[0].get_self_resource())
+        grp = Group.objects.create(name="rb_bulk_parity_group")
+        cls.member.groups.add(grp)
+        assign_perm("view_resourcebase", grp, cls.datasets[0].get_self_resource())
+
+    # ---- helpers -------------------------------------------------------------
+    def _base_rows(self):
+        from geonode.base.models import ResourceBase
+
+        # NON-polymorphic base rows -- exactly what the resource-list serializer renders
+        # (ResourceBaseViewSet.queryset = ResourceBase.objects, which is non_polymorphic).
+        return list(ResourceBase.objects.filter(pk__in=self.resource_pks).order_by("pk"))
+
+    def _legacy(self, user):
+        # The path the serializer used to take: one get_perms() per base row.
+        cache.clear()
+        return {
+            rb.pk: set(permissions_registry.get_perms(instance=rb, user=user, use_cache=False))
+            for rb in self._base_rows()
+        }
+
+    def _bulk(self, user):
+        from geonode.base.api.serializers import _real_instances
+
+        cache.clear()
+        leaves = _real_instances(self._base_rows())
+        return {pk: set(v) for pk, v in permissions_registry.get_perms_bulk(leaves, user=user, use_cache=False).items()}
+
+    # ---- AC#2: payload identical to legacy path for every user class, mixed types ----
+    def test_parity_all_user_classes_mixed_types(self):
+        for label, user in [
+            ("anonymous", self.anon),
+            ("owner", self.owner),
+            ("group-member", self.member),
+            ("staff", self.staff),
+            ("superuser", self.superuser),
+        ]:
+            with self.subTest(user=label):
+                self.assertEqual(self._bulk(user), self._legacy(user), f"bulk != legacy for {label}")
+
+    # ---- AC#1: query count is small and CONSTANT (independent of N) ------------------
+    @override_settings(DEFAULT_ANONYMOUS_VIEW_PERMISSION=False, DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION=False)
+    def test_bulk_query_count_is_constant(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from geonode.base.models import ResourceBase
+        from geonode.base.api.serializers import _real_instances
+
+        # A pool with NO perms for `newcomer` (default anonymous view stripped), so
+        # get_user_perms returns an empty list and the per-resource feature/handler tail
+        # (user_is_manager_of_group, can_feature/approve/publish -- all O(N) and present
+        # in the LEGACY path too) short-circuits. That isolates the Guardian work, which
+        # is the only thing get_perms_bulk collapses to O(1). Mirrors TASK-583's
+        # zero-grant newcomer.
+        def make_pool(n):
+            owner = self.superuser
+            leaves = []
+            for i in range(n):
+                leaves.append(create_single_dataset(f"qc_ds_{n}_{i}", owner=owner))
+                leaves.append(create_single_doc(f"qc_doc_{n}_{i}", owner=owner))
+                leaves.append(create_single_map(f"qc_map_{n}_{i}", owner=owner))
+            for r in leaves:
+                r.set_permissions({"users": {owner: ["view_resourcebase"]}, "groups": {}})
+            return list(ResourceBase.objects.filter(pk__in=[r.pk for r in leaves]).order_by("pk"))
+
+        small = make_pool(1)  # 3 resources (1 dataset + 1 document + 1 map)
+        large = make_pool(3)  # 9 resources (3 of each) -- same leaf ctypes, only N differs
+        # Sanity: the newcomer must be genuinely cold (no perms) for the gate to mean
+        # what it claims; if a default grant leaks in, fail loudly here rather than
+        # silently measuring the handler tail instead of the Guardian collapse.
+        self.assertEqual(
+            permissions_registry.get_perms(instance=small[0], user=self.newcomer, use_cache=False),
+            [],
+            "newcomer must have zero perms for the constant-query gate",
+        )
+
+        def count_for(rows):
+            # Warm process-level caches (ContentType, Configuration, upcast) first so the
+            # measurement reflects per-call DB work, not one-time global priming.
+            permissions_registry.get_perms_bulk(_real_instances(rows), user=self.newcomer, use_cache=False)
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                permissions_registry.get_perms_bulk(_real_instances(rows), user=self.newcomer, use_cache=True)
+            return len(ctx.captured_queries)
+
+        n_small = count_for(small)
+        n_large = count_for(large)
+        print(
+            f"\n[TASK-1444] get_perms_bulk queries: {len(small)} resources={n_small}, {len(large)} resources={n_large}"
+        )
+        # The whole point: serving all N mixed resources costs the SAME as serving 3 --
+        # the per-resource Guardian N+1 collapses to a constant independent of N.
+        self.assertEqual(n_large, n_small, "bulk query count must not grow with the number of resources")
+        # Absolute ceiling: a small constant (more than 583's 2-ctype case because a mixed
+        # list prefetches per leaf ctype + upcasts per ctype).
+        self.assertLessEqual(n_large, 30, f"expected a small constant query count, got {n_large}")
+
+    # ---- AC#2 + AC#3: serializer LIST render populates the shared context key and -----
+    # ---- every rendered row's perms match the legacy per-resource path ----------------
+    def test_serializer_list_populates_bulk_context_and_matches_legacy(self):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.request import Request
+        from geonode.base.api.serializers import ResourceBaseSerializer, BULK_PERMS_CONTEXT_KEY
+
+        rows = self._base_rows()
+        for label, user in [("group-member", self.member), ("superuser", self.superuser), ("anonymous", self.anon)]:
+            with self.subTest(user=label):
+                cache.clear()
+                django_req = APIRequestFactory().get("/")
+                drf_req = Request(django_req)
+                drf_req.user = user
+                serializer = ResourceBaseSerializer(instance=rows, many=True, embed=True, context={"request": drf_req})
+                rendered_list = serializer.to_representation(rows)
+                # AC#3: bulk pass injected the shared context key (no second mechanism).
+                self.assertIn(BULK_PERMS_CONTEXT_KEY, serializer.context)
+                rendered = {int(r["pk"]): set(r["perms"]) for r in rendered_list}
+                legacy = self._legacy(user)
+                for pk in self.resource_pks:
+                    self.assertEqual(rendered[pk], legacy[pk], f"rendered perms != legacy for resource {pk} ({label})")
+
+    # ---- no regression: a single-object (detail) render must NOT bulk and must match --
+    def test_detail_render_falls_back_to_per_resource(self):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.request import Request
+        from geonode.base.api.serializers import ResourceBaseSerializer, BULK_PERMS_CONTEXT_KEY
+
+        rb = self._base_rows()[1]
+        cache.clear()
+        django_req = APIRequestFactory().get("/")
+        drf_req = Request(django_req)
+        drf_req.user = self.member
+        serializer = ResourceBaseSerializer(instance=rb, context={"request": drf_req})
+        data = serializer.data
+        # No sibling page -> no bulk context injected; perms still correct.
+        self.assertNotIn(BULK_PERMS_CONTEXT_KEY, serializer.context)
+        cache.clear()
+        expected = set(permissions_registry.get_perms(instance=rb, user=self.member, use_cache=False))
+        self.assertEqual(set(data["perms"]), expected)
+
+    # ---- the novel-vs-583 bit: base ResourceBase rows are upcast to leaves -----------
+    def test_real_instances_upcasts_base_rows(self):
+        from geonode.base.api.serializers import _real_instances
+
+        leaves = _real_instances(self._base_rows())
+        leaf_classes = {type(o).__name__ for o in leaves}
+        # base ResourceBase rows must be resolved to their concrete leaf classes
+        self.assertNotIn("ResourceBase", leaf_classes)
+        self.assertTrue({"Dataset", "Document", "Map"}.issubset(leaf_classes))
