@@ -586,3 +586,74 @@ class DeleteAssetTests(GeoNodeBaseTestSupport):
         self.assertFalse(Asset.objects.filter(pk=asset_pk).exists())
         self.assertFalse(Link.objects.filter(pk=self.link1.pk).exists())
         self.assertFalse(os.path.exists(asset_file_path))
+
+
+# ---------------------------------------------------------------------------
+# Hydrata divergence (TASK-1570): asset-dir orphan-corruption hardening.
+# F1 (TASK-1571): remove_data tolerates an already-missing managed dir.
+# F2 (TASK-1572): cleanup_asset_data defers the filesystem removal to
+#                 transaction.on_commit so a rolled-back delete never touches
+#                 disk.
+# ---------------------------------------------------------------------------
+class HydrataAssetHardeningTests(APITestCase):
+    """Regression tests for the orphan-dir corruption hardening (TASK-1570)."""
+
+    def _make_managed_asset(self, username="hydrata_admin"):
+        u, _ = get_user_model().objects.get_or_create(username=username)
+        handler = asset_handler_registry.get_default_handler()
+        asset = handler.create(
+            title="Hydrata Test Asset",
+            description="orphan-dir hardening fixture",
+            type="NeverMind",
+            owner=u,
+            files=[ONE_JSON],
+            clone_files=True,
+        )
+        asset.save()
+        return handler, LocalAsset.objects.get(pk=asset.pk)
+
+    # --- F1 (TASK-1571) -----------------------------------------------------
+    def test_remove_data_tolerates_already_missing_dir(self):
+        """remove_data on an asset whose managed dir is already gone SUCCEEDS."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        self.assertTrue(os.path.isdir(managed_dir))
+
+        # Simulate the corruption: the dir vanished out-of-band (e.g. a prior
+        # rolled-back delete or terrain-reprocess that rmtree'd it).
+        shutil.rmtree(managed_dir)
+        self.assertFalse(os.path.exists(managed_dir))
+
+        # Must NOT raise — "already gone" is success.
+        handler.remove_data(asset)
+
+    def test_delete_asset_with_missing_dir_succeeds(self):
+        """Deleting a LocalAsset whose managed dir is gone does not 500."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        shutil.rmtree(managed_dir)
+
+        asset_pk = asset.pk
+        asset.delete()  # post_delete -> cleanup_asset_data -> remove_data
+        self.assertFalse(Asset.objects.filter(pk=asset_pk).exists())
+
+    def test_remove_data_still_raises_on_mismatched_base(self):
+        """An asset with mismatched managed base dirs STILL raises (not skipped)."""
+        handler, asset = self._make_managed_asset()
+        assets_root = os.path.normpath(settings.ASSETS_ROOT)
+        # Two managed files in DIFFERENT managed subdirs -> mismatch -> ValueError.
+        asset.location = [
+            os.path.join(assets_root, "dirA", "f.json"),
+            os.path.join(assets_root, "dirB", "f.json"),
+        ]
+        asset.save()
+        with self.assertRaises(ValueError):
+            handler.remove_data(asset)
+
+    def test_get_managed_dir_still_strict_on_missing_dir(self):
+        """_get_managed_dir (used by clone) stays strict: raises on missing dir."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        shutil.rmtree(managed_dir)
+        with self.assertRaises(ValueError):
+            handler._get_managed_dir(asset)
