@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from polymorphic.managers import PolymorphicManager
 from polymorphic.models import PolymorphicModel
 from django.db.models import signals
@@ -54,7 +54,16 @@ class LocalAsset(Asset):
 def cleanup_asset_data(instance, *args, **kwargs):
     from geonode.assets.handlers import asset_handler_registry
 
-    asset_handler_registry.get_handler(instance).remove_data(instance)
+    # Hydrata divergence (TASK-1572): defer the destructive filesystem removal
+    # to transaction.on_commit so a rolled-back delete NEVER touches disk. If
+    # this signal ran the rmtree synchronously and the surrounding transaction
+    # later rolled back, the asset row would be restored while its files were
+    # already gone — the exact orphan-dir corruption this epic eliminates. In
+    # autocommit (no open transaction) on_commit fires immediately, so the
+    # successful-delete path is unchanged. The closure captures the instance;
+    # remove_data recomputes the managed dir at fire time.
+    handler = asset_handler_registry.get_handler(instance)
+    transaction.on_commit(lambda: handler.remove_data(instance))
 
 
 signals.post_delete.connect(cleanup_asset_data, sender=LocalAsset)

@@ -111,7 +111,7 @@ class LocalAssetHandler(AssetHandlerInterface):
             # still fails loudly on a missing dir. Every other ValueError
             # (mismatched/unmanaged base) still propagates.
             common_dir = self._common_managed_dir(asset)
-            if common_dir is not None and not os.path.exists(common_dir):
+            if not os.path.exists(common_dir):
                 logger.info(
                     f"Managed dir {common_dir} already missing for asset {asset.pk}; nothing to remove"
                 )
