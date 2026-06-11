@@ -89,7 +89,11 @@ class AssetsTests(APITestCase):
         )
 
         cloned_file = file
-        reloaded.delete()
+        # Hydrata divergence (TASK-1572): asset-dir removal is deferred to
+        # transaction.on_commit; under the test's outer transaction it must be
+        # executed explicitly to assert the post-commit filesystem state.
+        with self.captureOnCommitCallbacks(execute=True):
+            reloaded.delete()
         self.assertFalse(Asset.objects.filter(pk=asset.pk).exists())
         self.assertFalse(os.path.exists(cloned_file))
         self.assertFalse(os.path.exists(os.path.dirname(cloned_file)))
@@ -146,11 +150,14 @@ class AssetsTests(APITestCase):
         self.assertTrue(os.path.exists(reloaded_file))
         self.assertTrue(os.path.exists(cloned_file))
 
-        reloaded.delete()
+        # Hydrata divergence (TASK-1572): on_commit-deferred asset-dir removal.
+        with self.captureOnCommitCallbacks(execute=True):
+            reloaded.delete()
         self.assertFalse(os.path.exists(reloaded_file))
         self.assertTrue(os.path.exists(cloned_file))
 
-        cloned.delete()
+        with self.captureOnCommitCallbacks(execute=True):
+            cloned.delete()
         self.assertFalse(os.path.exists(cloned_file))
 
     def test_clone_and_delete_data_unmanaged(self):
@@ -212,10 +219,16 @@ class AssetsTests(APITestCase):
         except ValueError:
             pass
 
-        managed_asset.delete()
+        # Hydrata divergence (TASK-1572): the post_delete cleanup (and any
+        # ValueError it raises) is deferred to transaction.on_commit, so the
+        # callbacks must be executed explicitly to observe the managed-dir
+        # removal and the mixed-asset detection error.
+        with self.captureOnCommitCallbacks(execute=True):
+            managed_asset.delete()
 
         try:
-            mixed_asset.delete()
+            with self.captureOnCommitCallbacks(execute=True):
+                mixed_asset.delete()
             self.fail("Missed mixed LocalAsset detection")
         except ValueError:
             pass
@@ -272,7 +285,9 @@ class AssetsTests(APITestCase):
 
         parent_dir = os.path.dirname(reloaded.location[0])
 
-        reloaded.delete()
+        # Hydrata divergence (TASK-1572): on_commit-deferred asset-dir removal.
+        with self.captureOnCommitCallbacks(execute=True):
+            reloaded.delete()
 
         self.assertFalse(os.path.exists(parent_dir))
         # Ensure original files still exist after asset deletion
@@ -579,10 +594,132 @@ class DeleteAssetTests(GeoNodeBaseTestSupport):
         asset_file_path = self.asset.localasset.location[0]
         self.assertTrue(os.path.exists(asset_file_path))
 
-        deleted, msg = unlink_asset(self.resource1, self.asset)
+        # Hydrata divergence (TASK-1572): unlink_asset deletes the asset, whose
+        # on_commit-deferred cleanup must be executed to assert the file is gone.
+        with self.captureOnCommitCallbacks(execute=True):
+            deleted, msg = unlink_asset(self.resource1, self.asset)
 
         self.assertTrue(deleted)
         self.assertIn(f"Asset {asset_pk} was unlinked and deleted from resource {self.resource1.pk}.", msg)
         self.assertFalse(Asset.objects.filter(pk=asset_pk).exists())
         self.assertFalse(Link.objects.filter(pk=self.link1.pk).exists())
         self.assertFalse(os.path.exists(asset_file_path))
+
+
+# ---------------------------------------------------------------------------
+# Hydrata divergence (TASK-1570): asset-dir orphan-corruption hardening.
+# F1 (TASK-1571): remove_data tolerates an already-missing managed dir.
+# F2 (TASK-1572): cleanup_asset_data defers the filesystem removal to
+#                 transaction.on_commit so a rolled-back delete never touches
+#                 disk.
+# ---------------------------------------------------------------------------
+class HydrataAssetHardeningTests(APITestCase):
+    """Regression tests for the orphan-dir corruption hardening (TASK-1570)."""
+
+    def _make_managed_asset(self, username="hydrata_admin"):
+        u, _ = get_user_model().objects.get_or_create(username=username)
+        handler = asset_handler_registry.get_default_handler()
+        asset = handler.create(
+            title="Hydrata Test Asset",
+            description="orphan-dir hardening fixture",
+            type="NeverMind",
+            owner=u,
+            files=[ONE_JSON],
+            clone_files=True,
+        )
+        asset.save()
+        return handler, LocalAsset.objects.get(pk=asset.pk)
+
+    # --- F1 (TASK-1571) -----------------------------------------------------
+    def test_remove_data_tolerates_already_missing_dir(self):
+        """remove_data on an asset whose managed dir is already gone SUCCEEDS."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        self.assertTrue(os.path.isdir(managed_dir))
+
+        # Simulate the corruption: the dir vanished out-of-band (e.g. a prior
+        # rolled-back delete or terrain-reprocess that rmtree'd it).
+        shutil.rmtree(managed_dir)
+        self.assertFalse(os.path.exists(managed_dir))
+
+        # Must NOT raise — "already gone" is success.
+        handler.remove_data(asset)
+
+    def test_delete_asset_with_missing_dir_succeeds(self):
+        """Deleting a LocalAsset whose managed dir is gone does not 500."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        shutil.rmtree(managed_dir)
+
+        asset_pk = asset.pk
+        asset.delete()  # post_delete -> cleanup_asset_data -> remove_data
+        self.assertFalse(Asset.objects.filter(pk=asset_pk).exists())
+
+    def test_remove_data_still_raises_on_mismatched_base(self):
+        """An asset with mismatched managed base dirs STILL raises (not skipped)."""
+        handler, asset = self._make_managed_asset()
+        assets_root = os.path.normpath(settings.ASSETS_ROOT)
+        # Two managed files in DIFFERENT managed subdirs -> mismatch -> ValueError.
+        asset.location = [
+            os.path.join(assets_root, "dirA", "f.json"),
+            os.path.join(assets_root, "dirB", "f.json"),
+        ]
+        asset.save()
+        with self.assertRaises(ValueError):
+            handler.remove_data(asset)
+
+    def test_get_managed_dir_still_strict_on_missing_dir(self):
+        """_get_managed_dir (used by clone) stays strict: raises on missing dir."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        shutil.rmtree(managed_dir)
+        with self.assertRaises(ValueError):
+            handler._get_managed_dir(asset)
+
+    # --- F2 (TASK-1572) -----------------------------------------------------
+    def test_delete_rolled_back_leaves_dir_on_disk(self):
+        """A rolled-back delete must NEVER touch the filesystem (W1 gate).
+
+        The filesystem removal is deferred to transaction.on_commit, so when the
+        surrounding transaction rolls back the rmtree is discarded and no
+        orphaned dir is created (the corruption is never produced)."""
+        from django.db import transaction
+
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        self.assertTrue(os.path.isdir(managed_dir))
+
+        class _DeliberateCascadeFailure(Exception):
+            pass
+
+        with self.assertRaises(_DeliberateCascadeFailure):
+            with transaction.atomic():
+                asset.delete()  # queues on_commit(remove_data)
+                # Simulate a mid-cascade failure AFTER the asset row delete.
+                raise _DeliberateCascadeFailure("boom")
+
+        # Rollback: the on_commit callback never fired -> dir survives on disk.
+        self.assertTrue(
+            os.path.isdir(managed_dir),
+            "Rolled-back delete must not remove the managed dir (no orphan created)",
+        )
+
+    def test_delete_committed_removes_dir(self):
+        """On a successful (committed) delete the managed dir IS removed.
+
+        Uses captureOnCommitCallbacks because the test itself runs inside an
+        atomic block (APITestCase), so on_commit callbacks are otherwise held
+        until the test's outer transaction — captureOnCommitCallbacks executes
+        them deterministically to assert the deferred removal."""
+        handler, asset = self._make_managed_asset()
+        managed_dir = handler._get_managed_dir(asset)
+        self.assertTrue(os.path.isdir(managed_dir))
+
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            asset.delete()
+            # Removal is deferred: still on disk until the on_commit fires.
+            self.assertTrue(os.path.isdir(managed_dir))
+
+        # A removal callback was queued and ran on (simulated) commit.
+        self.assertGreaterEqual(len(callbacks), 1)
+        self.assertFalse(os.path.exists(managed_dir))

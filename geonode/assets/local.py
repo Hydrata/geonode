@@ -102,6 +102,20 @@ class LocalAssetHandler(AssetHandlerInterface):
         """
         asset = self.__force_real_instance(asset)
         if self._are_files_managed(asset):
+            # Hydrata divergence (TASK-1571): treat an already-missing managed
+            # dir as success. Orphaned-dir corruption (a prior rolled-back
+            # delete or terrain-reprocess that rmtree'd the dir) otherwise makes
+            # _get_managed_dir raise ValueError -> the post_delete signal 500s
+            # and the resource becomes permanently un-deletable. We pre-check the
+            # common dir here ONLY; _get_managed_dir stays strict so clone()
+            # still fails loudly on a missing dir. Every other ValueError
+            # (mismatched/unmanaged base) still propagates.
+            common_dir = self._common_managed_dir(asset)
+            if not os.path.exists(common_dir):
+                logger.info(
+                    f"Managed dir {common_dir} already missing for asset {asset.pk}; nothing to remove"
+                )
+                return
             logger.info(f"Removing files for asset {asset.pk}")
             base = self._get_managed_dir(asset)
             logger.info(f"Removing asset path {base} for asset {asset.pk}")
@@ -202,7 +216,15 @@ class LocalAssetHandler(AssetHandlerInterface):
         return bool(managed)
 
     @classmethod
-    def _get_managed_dir(cls, asset):
+    def _common_managed_dir(cls, asset):
+        """Resolve the asset's common managed dir WITHOUT asserting existence.
+
+        Hydrata divergence (TASK-1571): factored out of ``_get_managed_dir`` so
+        ``remove_data`` can pre-check whether the managed dir is already gone
+        (orphan-dir corruption) and treat that as success. Mismatched/unmanaged
+        bases STILL raise here — only the on-disk existence/is-dir checks are
+        deferred to ``_get_managed_dir`` (which stays strict for ``clone()``).
+        """
         if not asset.location:
             raise ValueError("Asset does not have any associated file")
 
@@ -223,7 +245,12 @@ class LocalAssetHandler(AssetHandlerInterface):
             else:
                 base_common = base
 
-        managed_dir = os.path.join(assets_root, base_common)
+        return os.path.join(assets_root, base_common)
+
+    @classmethod
+    def _get_managed_dir(cls, asset):
+        managed_dir = cls._common_managed_dir(asset)
+        assets_root = os.path.normpath(settings.ASSETS_ROOT)
 
         if not os.path.exists(managed_dir):
             raise ValueError(f"Common dir '{managed_dir}' does not exist - Asset {asset.pk}")
