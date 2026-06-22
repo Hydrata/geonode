@@ -112,9 +112,7 @@ class LocalAssetHandler(AssetHandlerInterface):
             # (mismatched/unmanaged base) still propagates.
             common_dir = self._common_managed_dir(asset)
             if not os.path.exists(common_dir):
-                logger.info(
-                    f"Managed dir {common_dir} already missing for asset {asset.pk}; nothing to remove"
-                )
+                logger.info(f"Managed dir {common_dir} already missing for asset {asset.pk}; nothing to remove")
                 return
             logger.info(f"Removing files for asset {asset.pk}")
             base = self._get_managed_dir(asset)
