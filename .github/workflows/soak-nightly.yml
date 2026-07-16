@@ -1,0 +1,237 @@
+name: Nightly Docker-Suite Soak (flake-rate data)
+
+# TASK-2294 (epic TASK-2290, W0). A SCHEDULED run of the full docker functional
+# suite so the fork accumulates >= 14 days of per-test pass/fail data BEFORE the
+# W2 differential-green baseline is pinned (epic brief R6: pinning from run #1
+# bakes that run's flakes in; pin later from the intersection of N runs).
+#
+# Differences from tests.yml (the PR gate):
+#   * triggered on `schedule` + `workflow_dispatch` only (never pull_request) — a
+#     soak measures a metric over time, it is NOT a required check.
+#   * every suite runs to COMPLETION (no --failfast) so we capture the full
+#     per-test picture each night, not just up to the first failure.
+#   * per-test results (raw -v3 log + a parsed status TSV + JUnit XML) are
+#     retained as artifacts for 21 days so W2's comparator (TASK-2302) can compute
+#     a per-test flake rate and pin the baseline from the intersection of N runs.
+#
+# SEQUENCING: a `schedule:` trigger only ever fires from the repository's DEFAULT
+# branch. This file must live on the default branch for the cron to run; the
+# orchestrator lands it there and records `baselines.soak_started_at` on the spine.
+# It is self-contained (does not reuse run-test-suite.yml) precisely so the whole
+# soak lives in one file on the default branch.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC nightly
+  workflow_dispatch:
+
+concurrency:
+  group: soak-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------
+  # BUILD DOCKER IMAGES AND SHARE AS ARTIFACTS (mirrors tests.yml build_images)
+  # -------------------------------------------------
+  build_images:
+    name: Build and export Docker images
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build all services (Docker Compose v2)
+        run: docker compose --env-file .env_test -f docker-compose-test.yml build --progress plain
+
+      - name: Save built Docker images
+        run: |
+          mkdir -p docker_images
+          docker save -o docker_images/django.tar geonode/geonode:latest-ubuntu-24.04
+
+      - name: Upload Docker images as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: docker_images
+          retention-days: 1
+
+  # -------------------------------------------------
+  # SOAK: run every suite to completion, retain per-test results
+  # -------------------------------------------------
+  soak:
+    name: Soak · ${{ matrix.suite.name }}
+    needs: build_images
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: smoke
+            command: >
+              ./tests/test.sh geonode.tests.smoke geonode.tests.test_rest_api geonode.tests.test_search
+              geonode.tests.test_utils geonode.tests.test_headers --duration=30
+          - name: main
+            command: >
+              TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
+              for a in settings.GEONODE_APPS if "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
+              ./tests/test.sh $TESTS geonode.thumbs.tests geonode.people.tests geonode.people.socialaccount.providers.geonode_openid_connect.tests --duration=30
+          - name: security
+            command: >
+              TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
+              for a in settings.GEONODE_APPS if "security" in a]))') &&
+              ./tests/test.sh $TESTS --duration=30
+          - name: gis_backend
+            command: >
+              TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
+              for a in settings.GEONODE_APPS if "geoserver" in a]))') &&
+              ./tests/test.sh $TESTS --duration=30
+          - name: rest_apis
+            command: >
+              ./tests/test.sh geonode.api.tests geonode.base.api.tests geonode.layers.api.tests
+              geonode.maps.api.tests geonode.documents.api.tests geonode.geoapps.api.tests --duration=30
+          - name: csw
+            command: >
+              ./tests/test.sh geonode.tests.csw geonode.catalogue.backends.tests --duration=30
+          - name: upload
+            command: >
+              ./tests/test.sh geonode.upload --duration=30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built Docker images
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: docker_images
+
+      - name: Load Docker images
+        run: docker load -i docker_images/django.tar
+
+      - name: Start the stack
+        run: docker compose --env-file .env_test -f docker-compose-test.yml up -d
+
+      - name: Setup test databases
+        run: |
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_postgres
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode_data
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode_data -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      - name: Run suite to completion (no --failfast; full per-test data)
+        id: run
+        continue-on-error: true
+        run: |
+          mkdir -p soak_results
+          # Capture stdout+stderr (Django's test runner writes -v3 results to
+          # stderr) so the raw per-test log is complete even when tests fail.
+          docker compose --env-file .env_test -f docker-compose-test.yml exec -T django bash -s <<'BASH' 2>&1 | tee "soak_results/${{ matrix.suite.name }}.log"
+          set -uo pipefail
+          ${{ matrix.suite.command }}
+          BASH
+
+      - name: Parse per-test results (TSV + JUnit XML)
+        if: always()
+        env:
+          SUITE: ${{ matrix.suite.name }}
+        run: |
+          python3 - "$SUITE" <<'PY'
+          import datetime, html, os, re, sys, xml.sax.saxutils as sx
+          suite = sys.argv[1]
+          log_path = f"soak_results/{suite}.log"
+          tsv_path = f"soak_results/{suite}.tsv"
+          xml_path = f"soak_results/{suite}.junit.xml"
+          run_date = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+          # Django `manage.py test -v 3` prints, per test:
+          #   test_method (module.path.ClassName.test_method) ... ok
+          # or, when a docstring is present, split across two lines:
+          #   test_method (module.path.ClassName.test_method)
+          #   Docstring first line ... ok
+          # Status tokens: ok | FAIL | ERROR | skipped '...' | expected failure |
+          #   unexpected success.  Parse tolerantly: remember the last test header
+          #   seen, pair it with the next '... <status>' terminator.
+          HEADER = re.compile(r'^(test\w+)\s+\(([\w\.]+)\)')
+          STATUS = re.compile(r'\.\.\.\s+(ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)\s*$')
+          NORM = {
+              'ok': 'passed', 'FAIL': 'failed', 'ERROR': 'error',
+              'expected failure': 'xfail', 'unexpected success': 'xpass',
+          }
+          def norm(tok):
+              if tok.startswith('skipped'):
+                  return 'skipped'
+              return NORM.get(tok, 'unknown')
+
+          rows = []          # (test_id, status)
+          current = None
+          try:
+              with open(log_path, encoding='utf-8', errors='replace') as fh:
+                  for line in fh:
+                      line = line.rstrip('\n')
+                      h = HEADER.match(line)
+                      if h:
+                          current = h.group(2)
+                          s = STATUS.search(line)
+                          if s:
+                              rows.append((current, norm(s.group(1))))
+                              current = None
+                          continue
+                      if current:
+                          s = STATUS.search(line)
+                          if s:
+                              rows.append((current, norm(s.group(1))))
+                              current = None
+          except FileNotFoundError:
+              pass
+
+          with open(tsv_path, 'w', encoding='utf-8') as out:
+              out.write(f"# suite\t{suite}\n# run_utc\t{run_date}\n")
+              out.write("test_id\tstatus\n")
+              for tid, st in rows:
+                  out.write(f"{tid}\t{st}\n")
+
+          n_fail = sum(1 for _, s in rows if s in ('failed', 'error'))
+          n_skip = sum(1 for _, s in rows if s == 'skipped')
+          with open(xml_path, 'w', encoding='utf-8') as out:
+              out.write('<?xml version="1.0" encoding="utf-8"?>\n')
+              out.write(
+                  f'<testsuite name="geonode-soak-{sx.quoteattr(suite)[1:-1]}" '
+                  f'tests="{len(rows)}" failures="{n_fail}" skipped="{n_skip}" '
+                  f'timestamp="{run_date}">\n'
+              )
+              for tid, st in rows:
+                  cls, _, meth = tid.rpartition('.')
+                  attrs = f'classname={sx.quoteattr(cls)} name={sx.quoteattr(meth)}'
+                  if st in ('failed', 'error'):
+                      tag = 'failure' if st == 'failed' else 'error'
+                      out.write(f'  <testcase {attrs}><{tag} message="{st}"/></testcase>\n')
+                  elif st == 'skipped':
+                      out.write(f'  <testcase {attrs}><skipped/></testcase>\n')
+                  else:
+                      out.write(f'  <testcase {attrs}/>\n')
+              out.write('</testsuite>\n')
+
+          print(f"[{suite}] parsed {len(rows)} tests: "
+                f"{n_fail} fail/err, {n_skip} skipped -> {tsv_path}, {xml_path}")
+          PY
+
+      - name: Upload soak results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-results-${{ matrix.suite.name }}-run${{ github.run_number }}
+          path: soak_results/
+          retention-days: 21
+
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose --env-file .env_test -f docker-compose-test.yml down -v
