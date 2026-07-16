@@ -1,0 +1,43 @@
+# CODEOWNERS — TASK-2297 fleet CI enforcement.
+#
+# Every path below is on the fleet's protected-path list: a change here can
+# redefine what a "required check" tests, or silently no-op it, without the
+# PR looking suspicious. The org ruleset's "Require review from Code Owners"
+# toggle means a PR touching any of these paths cannot merge without an
+# approving review from the listed owner — deliberately the HUMAN account,
+# never hydrata-ci-bot. See docs/fleet-enforcement/OPERATOR-CHECKLIST.md in
+# the Hydrata/deploy repo for the full governance bundle.
+#
+# NO branch-wide minimum-approval count is set anywhere in the ruleset — a
+# green PR touching NONE of the paths below needs zero human approvals and
+# auto-merges. Only PRs touching a path below require the human.
+#
+# geonode is upstream-forked and gates on DIFFERENTIAL green (Hydrata-added
+# tests absolute-green + upstream suite no-regression vs a governed
+# baseline), not absolute green; CodeQL stays surface-only. See the
+# 2026-07-15 differential-green decision record on epic TASK-2290.
+#
+# Self-guard (last line): this file is on its own protected list. An agent
+# PR cannot repoint CODEOWNERS away from the human to remove the guard.
+
+# Whole .github/ tree: workflows, composite actions, CODEOWNERS itself.
+/.github/**                          @davekennewell
+
+# Test/lint config-as-code. Unanchored `conftest.py` matches every
+# conftest.py at any depth (geonode/tests/bdd/**).
+conftest.py                          @davekennewell
+/pyproject.toml                      @davekennewell
+/pytest.ini                          @davekennewell
+/setup.cfg                           @davekennewell
+requirements*.txt                    @davekennewell
+
+# PLANNED, DOES NOT EXIST YET (TASK-2302, W2): the differential-green
+# comparator baseline file. Its exact name/path is chosen when 2302 lands
+# the baseline-pin machinery — CODEOWNERS tolerates a non-existent path, so
+# this line is a placeholder that starts protecting the file the moment it's
+# created, closing the window where a first commit could land it unreviewed.
+# Update this path if 2302 names the file differently.
+/.github/geonode-baseline.json        @davekennewell
+
+# Self-guard — must stay the human, always, or the guard removes itself.
+/.github/CODEOWNERS                   @davekennewell
