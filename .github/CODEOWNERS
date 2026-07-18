@@ -21,6 +21,15 @@
 # PR cannot repoint CODEOWNERS away from the human to remove the guard.
 
 # Whole .github/ tree: workflows, composite actions, CODEOWNERS itself.
+# This already covers .github/scripts/geonode_baseline_gate.py (TASK-2302
+# fix-pass, finding A/E) — the differential-green comparator + two-step
+# re-pin governance script vendored here from Hydrata/deploy — and its test
+# file, .github/scripts/test_geonode_baseline_gate.py. That is the guard
+# finding E asks for: the re-pin governance the script implements is itself
+# gated on human (CODEOWNERS) review of any change to the script, same as
+# the baseline JSON it protects below. Verified by pattern (gitignore-style
+# `/.github/**` matches any depth under .github/) — no new CODEOWNERS line
+# was needed for the relocation.
 /.github/**                          @davekennewell
 
 # Test/lint config-as-code. Unanchored `conftest.py` matches every
