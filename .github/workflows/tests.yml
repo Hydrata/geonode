@@ -132,6 +132,8 @@ jobs:
   comparator_selftest:
     name: Comparator self-test (TASK-2302)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

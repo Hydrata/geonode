@@ -424,7 +424,10 @@ def _cmd_check(args):
 
     baseline_suites = set(baseline.get("suites", []))
     if baseline_suites:
-        check_suites = set().union(*(parse_tsv_suites(p) for p in args.tsv)) if args.tsv else set()
+        # args.tsv is required=True on this subcommand (argparse enforces
+        # >=1), so no empty-list guard is needed here — set().union(*gen)
+        # is already well-defined (returns set()) if it ever were empty.
+        check_suites = set().union(*(parse_tsv_suites(p) for p in args.tsv))
         uncovered = baseline_suites - check_suites
         if uncovered:
             print(
