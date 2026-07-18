@@ -101,6 +101,202 @@ jobs:
         ./tests/test.sh geonode.upload --duration=30 --failfast
 
   # -------------------------------------------------
+  # TASK-2302 (epic 2290 W2): differential-green comparator + two-step re-pin
+  # governance. Decision record: docs/reports/2026-07-18-q-1-geonode-
+  # differential-green.html (Hydrata/deploy) — geonode is an upstream fork
+  # and carries upstream-inherited reds, so it gates on NO-REGRESSION vs a
+  # governed baseline rather than absolute green. NEITHER job below is a
+  # required check yet (soak-immature tripwire, epic TASK-2290 constraint 2)
+  # — .github/geonode-baseline.json does not exist until the soak (TASK-2294)
+  # reaches >=14 days / >=14 runs (earliest 2026-07-31) AND the two known
+  # deterministic reds (TASK-2315/2316) are confirmed fixed in it. Until then
+  # `differential_green` is a no-op-with-notice, not a gate.
+  # -------------------------------------------------
+
+  repin_governance:
+    name: Two-step re-pin governance (TASK-2302)
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Hydrata/deploy (comparator tooling)
+        uses: actions/checkout@v4
+        with:
+          repository: Hydrata/deploy
+          # TODO(operator, at push time): resolve to a pinned SHA, same
+          # ratchet discipline as the hydrata/run_anuga cross-repo pins
+          # (TASK-2298, docs/fleet-enforcement/pin-ratchet.md) — this
+          # workflow file is committed locally on the epic branch (not yet
+          # pushed), so there is no real remote commit to pin to yet. Do not
+          # leave this on a floating branch ref once it lands on deploy 5.x.
+          ref: 5.x
+          path: _deploy_src
+
+      - name: Compute changed files vs the PR base
+        id: diff
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          CHANGED=$(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}"...HEAD | tr '\n' ' ')
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce two-step re-pin governance
+        run: |
+          CHANGED_ARGS=""
+          for f in ${{ steps.diff.outputs.changed }}; do
+            CHANGED_ARGS="$CHANGED_ARGS --changed-file $f"
+          done
+          python3 _deploy_src/scripts/geonode_baseline_gate.py repin-guard \
+            --branch "${{ github.head_ref }}" \
+            --baseline-path ".github/geonode-baseline.json" \
+            $CHANGED_ARGS
+
+  differential_green:
+    name: Differential-green comparator (TASK-2302, informational until baseline is pinned)
+    needs: [build_images, smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Hydrata/deploy (comparator tooling)
+        uses: actions/checkout@v4
+        with:
+          repository: Hydrata/deploy
+          # See the same TODO in repin_governance above.
+          ref: 5.x
+          path: _deploy_src
+
+      - name: Check baseline exists (soak-immature tripwire)
+        id: baseline_check
+        run: |
+          if [ -f .github/geonode-baseline.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::.github/geonode-baseline.json not yet pinned (soak-immature per epic TASK-2290 constraint 2, earliest 2026-07-31) — differential-green is a no-op until then."
+          fi
+
+      - name: Download built Docker images
+        if: steps.baseline_check.outputs.exists == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: docker_images
+
+      - name: Load Docker images
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: docker load -i docker_images/django.tar
+
+      - name: Start the stack
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: docker compose --env-file .env_test -f docker-compose-test.yml up -d
+
+      - name: Setup test databases
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_postgres
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode_data
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode_data -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      # Run to COMPLETION (no --failfast), unlike the PR-gate suites above —
+      # a partial run cannot support a meaningful no-regression comparison
+      # (an early bail would report every untested-in-time baseline test as
+      # "missing", not "unknown"). Scoped to the two suites carrying the
+      # epic's two tracked deterministic reds (TASK-2315 [main], TASK-2316
+      # [rest_apis]) for now; widen suite coverage in a follow-up once the
+      # first baseline is pinned and the CI-minute cost is measured.
+      - name: Run main + rest_apis suites to completion
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          mkdir -p diff_results
+          docker compose --env-file .env_test -f docker-compose-test.yml exec -T django bash -s <<'BASH' 2>&1 | tee diff_results/main.log
+          set -uo pipefail
+          TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests" for a in settings.GEONODE_APPS if "security" not in a and "geoserver" not in a and "upload" not in a]))')
+          ./tests/test.sh $TESTS geonode.thumbs.tests geonode.people.tests geonode.people.socialaccount.providers.geonode_openid_connect.tests --duration=30
+          BASH
+          docker compose --env-file .env_test -f docker-compose-test.yml exec -T django bash -s <<'BASH' 2>&1 | tee diff_results/rest_apis.log
+          set -uo pipefail
+          ./tests/test.sh geonode.api.tests geonode.base.api.tests geonode.layers.api.tests geonode.maps.api.tests geonode.documents.api.tests geonode.geoapps.api.tests --duration=30
+          BASH
+
+      # Same parser as soak-nightly.yml's "Parse per-test results" step
+      # (TASK-2294) — kept as an inline duplicate rather than a shared
+      # action, matching this repo's existing per-workflow-file convention
+      # (see hydrata's test-nightly.yml vs test.yml for the same pattern).
+      - name: Parse per-test results to TSV
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          python3 - <<'PY'
+          import re
+          for suite in ("main", "rest_apis"):
+              log_path = f"diff_results/{suite}.log"
+              tsv_path = f"diff_results/{suite}.tsv"
+              HEADER = re.compile(r'^(test\w+)\s+\(([\w\.]+)\)')
+              STATUS = re.compile(r'\.\.\.\s+(ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)\s*$')
+              NORM = {'ok': 'passed', 'FAIL': 'failed', 'ERROR': 'error',
+                      'expected failure': 'xfail', 'unexpected success': 'xpass'}
+              def norm(tok):
+                  return 'skipped' if tok.startswith('skipped') else NORM.get(tok, 'unknown')
+              rows, current = [], None
+              try:
+                  with open(log_path, encoding='utf-8', errors='replace') as fh:
+                      for line in fh:
+                          line = line.rstrip('\n')
+                          h = HEADER.match(line)
+                          if h:
+                              current = h.group(2)
+                              s = STATUS.search(line)
+                              if s:
+                                  rows.append((current, norm(s.group(1))))
+                                  current = None
+                              continue
+                          if current:
+                              s = STATUS.search(line)
+                              if s:
+                                  rows.append((current, norm(s.group(1))))
+                                  current = None
+              except FileNotFoundError:
+                  pass
+              with open(tsv_path, 'w', encoding='utf-8') as out:
+                  out.write(f"# suite\t{suite}\n# run_utc\tpr-{'${{ github.sha }}'}\n")
+                  out.write("test_id\tstatus\n")
+                  for tid, st in rows:
+                      out.write(f"{tid}\t{st}\n")
+              print(f"[{suite}] parsed {len(rows)} tests -> {tsv_path}")
+          PY
+
+      - name: Run the differential-green comparator
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          python3 _deploy_src/scripts/geonode_baseline_gate.py check \
+            --baseline .github/geonode-baseline.json \
+            --tsv diff_results/main.tsv \
+            --tsv diff_results/rest_apis.tsv
+
+      - name: Upload diff results artifact
+        if: always() && steps.baseline_check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-green-results-${{ github.run_id }}
+          path: diff_results/
+          retention-days: 21
+
+      - name: Dump docker logs on failure
+        if: failure() && steps.baseline_check.outputs.exists == 'true'
+        uses: jwalton/gh-docker-logs@v2
+
+      - name: Stop the stack
+        if: always() && steps.baseline_check.outputs.exists == 'true'
+        run: docker compose --env-file .env_test -f docker-compose-test.yml down -v
+
+  # -------------------------------------------------
   # CLEANUP JOB: REMOVE ALL ARTIFACTS AT THE END
   # -------------------------------------------------
   cleanup:
@@ -113,6 +309,7 @@ jobs:
       - rest_apis
       - csw
       - upload
+      - differential_green
     runs-on: ubuntu-24.04
     if: always()
     steps:
