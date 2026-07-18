@@ -54,7 +54,13 @@ class ThumbnailsUtilsUnitTest(GeoNodeBaseSimpleTestSupport):
                 "styles": "",
                 "width": "512",
                 "height": "512",
-                "crs": "epsg:4326",
+                # TASK-2315: Hydrata commit 1d8a16604 ("Apply Hydrata patches for
+                # 5.x") deliberately remapped the request key from 'crs' to 'srs'
+                # in _build_getmap_request (ESRI WMS servers reject 'crs'). This
+                # test still asserted the pre-patch key and had drifted stale
+                # since — the fix belongs on the test, not the (intentional)
+                # production behaviour.
+                "srs": "epsg:4326",
                 "bbox": "-90,-180,90,180",
                 "format": "None",
                 "transparent": "FALSE",
