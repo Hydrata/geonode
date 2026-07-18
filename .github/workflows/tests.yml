@@ -165,7 +165,6 @@ jobs:
           fetch-depth: 0
 
       - name: Compute changed files vs the PR base
-        id: diff
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
