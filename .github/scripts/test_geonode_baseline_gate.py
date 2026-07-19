@@ -349,6 +349,23 @@ class TestCheckTombstoneOnlyChange:
         assert ok is False
         assert "expected_pass" in reason
 
+    def test_refuses_when_a_non_allowlisted_field_is_smuggled(self):
+        # W3 gapcheck regression lock: the check is whole-document-minus-tombstones
+        # equality, NOT a hardcoded field allowlist. A brand-new top-level field
+        # (a future schema addition the old allowlist never listed) added on a
+        # tombstone-only branch must be refused — the exact smuggling channel the
+        # allowlist->whole-doc change closed. The other refuse-tests only mutate
+        # known_tests/expected_pass (which the OLD allowlist already covered), so
+        # this is the only test that fails under the pre-fix code.
+        old = self._old()
+        new = self._old(
+            tombstones={"deleted.test_z": self._valid_tombstone_entry()},
+            quarantine=["stable.test_a"],  # not a field any old allowlist listed
+        )
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "quarantine" in reason
+
     def test_refuses_when_existing_tombstone_removed(self):
         old = self._old(tombstones={"deleted.test_z": self._valid_tombstone_entry()})
         new = self._old(tombstones={})
