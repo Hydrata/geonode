@@ -246,6 +246,220 @@ class TestCompare:
         assert "brand.new_test" in report
 
 
+# --- tombstones (TASK-2320) ---------------------------------------------------
+
+class TestCompareTombstones:
+    @pytest.fixture
+    def baseline(self):
+        return {
+            "known_tests": ["stable.test_a", "deleted.test_z", "flaky.test_b"],
+            "expected_pass": ["stable.test_a", "deleted.test_z"],
+            "tombstones": {
+                "deleted.test_z": {
+                    "reason": "removed dead coverage in cleanup PR #2320",
+                    "ticket": "TASK-2320",
+                    "date": "2026-07-19",
+                },
+            },
+        }
+
+    def test_tombstoned_test_absent_is_not_missing(self, baseline):
+        # deleted.test_z is gone from the run entirely -- exactly what a
+        # legitimate deletion looks like. Must NOT gate.
+        current = {"stable.test_a": "passed", "flaky.test_b": "failed"}
+        result = gate.compare(current, baseline)
+        assert result["ok"] is True
+        assert result["missing_from_run"] == []
+        assert result["tombstone_still_present"] == []
+
+    def test_tombstoned_test_still_present_and_failing_still_gates(self, baseline):
+        # The tombstone claim was wrong (or stale) -- the test still exists
+        # and is failing. Must NOT be silently swallowed by the tombstone.
+        current = {"stable.test_a": "passed", "deleted.test_z": "failed"}
+        result = gate.compare(current, baseline)
+        assert result["ok"] is False
+        assert result["tombstone_still_present"] == ["deleted.test_z"]
+
+    def test_tombstoned_test_still_present_even_if_passing_still_gates(self, baseline):
+        # Passing doesn't rescue it either -- a tombstone means "this test
+        # does not exist"; if it does, the tombstone entry is simply false
+        # and must be pruned/investigated, not silently trusted forever.
+        current = {"stable.test_a": "passed", "deleted.test_z": "passed"}
+        result = gate.compare(current, baseline)
+        assert result["ok"] is False
+        assert result["tombstone_still_present"] == ["deleted.test_z"]
+
+    def test_baseline_without_tombstones_key_is_unaffected(self):
+        # Backwards compatibility: a baseline pinned before TASK-2320 has no
+        # "tombstones" key at all.
+        baseline = {"known_tests": ["t1"], "expected_pass": ["t1"]}
+        result = gate.compare({"t1": "passed"}, baseline)
+        assert result["ok"] is True
+        assert result["tombstone_still_present"] == []
+
+    def test_format_report_shows_tombstone_still_present_section(self, baseline):
+        current = {"stable.test_a": "passed", "deleted.test_z": "failed"}
+        result = gate.compare(current, baseline)
+        report = gate.format_report(result)
+        assert "TOMBSTONE STILL PRESENT" in report
+        assert "deleted.test_z" in report
+
+
+class TestCheckTombstoneOnlyChange:
+    def _old(self, **overrides):
+        base = {
+            "known_tests": ["stable.test_a", "deleted.test_z"],
+            "expected_pass": ["stable.test_a", "deleted.test_z"],
+            "suites": ["main"],
+            "pinned_at": "2026-07-19T00:00:00+00:00",
+            "soak_runs_sampled": 14,
+            "tombstones": {},
+        }
+        base.update(overrides)
+        return base
+
+    def _valid_tombstone_entry(self):
+        return {"reason": "dead coverage removed", "ticket": "TASK-2320", "date": "2026-07-19"}
+
+    def test_valid_addition_is_accepted(self):
+        old = self._old()
+        new = self._old(tombstones={"deleted.test_z": self._valid_tombstone_entry()})
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is True
+        assert "deleted.test_z" in reason
+
+    def test_refuses_when_known_tests_also_changed(self):
+        # Smuggling a real re-pin through the narrow exception.
+        old = self._old()
+        new = self._old(
+            known_tests=["stable.test_a", "deleted.test_z", "sneaky.new_test"],
+            tombstones={"deleted.test_z": self._valid_tombstone_entry()},
+        )
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "known_tests" in reason
+
+    def test_refuses_when_expected_pass_also_changed(self):
+        old = self._old()
+        new = self._old(
+            expected_pass=["stable.test_a"],
+            tombstones={"deleted.test_z": self._valid_tombstone_entry()},
+        )
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "expected_pass" in reason
+
+    def test_refuses_when_existing_tombstone_removed(self):
+        old = self._old(tombstones={"deleted.test_z": self._valid_tombstone_entry()})
+        new = self._old(tombstones={})
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "removed or edited" in reason
+
+    def test_refuses_when_existing_tombstone_edited(self):
+        old = self._old(tombstones={"deleted.test_z": self._valid_tombstone_entry()})
+        edited = dict(self._valid_tombstone_entry())
+        edited["reason"] = "a different reason now"
+        new = self._old(tombstones={"deleted.test_z": edited})
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "removed or edited" in reason
+
+    def test_refuses_when_no_new_tombstones(self):
+        old = self._old()
+        new = self._old()
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "nothing for this exception to authorize" in reason
+
+    def test_refuses_tombstoning_a_test_not_in_known_tests(self):
+        # Not verifiable — this function cannot see the code diff, but it CAN
+        # refuse a claim about a test the baseline never even knew about
+        # ("must require the deletion to be verifiable... not just an
+        # assertion" — TASK-2320 AC).
+        old = self._old()
+        new = self._old(tombstones={"never.existed": self._valid_tombstone_entry()})
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "not in known_tests" in reason
+
+    def test_refuses_tombstone_missing_required_fields(self):
+        old = self._old()
+        new = self._old(tombstones={"deleted.test_z": {"reason": "dead coverage"}})  # no ticket/date
+        ok, reason = gate.check_tombstone_only_change(old, new)
+        assert ok is False
+        assert "missing required field" in reason
+
+
+class TestRepinGovernanceTombstoneBranch:
+    BASELINE_PATH = ".github/geonode-baseline.json"
+
+    def _old(self):
+        return {
+            "known_tests": ["stable.test_a", "deleted.test_z"],
+            "expected_pass": ["stable.test_a", "deleted.test_z"],
+            "suites": ["main"],
+            "pinned_at": "2026-07-19T00:00:00+00:00",
+            "soak_runs_sampled": 14,
+            "tombstones": {},
+        }
+
+    def _new_valid(self):
+        new = self._old()
+        new["tombstones"] = {
+            "deleted.test_z": {"reason": "dead coverage removed", "ticket": "TASK-2320", "date": "2026-07-19"},
+        }
+        return new
+
+    def test_tombstone_branch_without_baseline_content_is_refused(self):
+        # Fail closed: the branch NAME alone is not proof of a tombstone-only
+        # change — old/new baseline content must be supplied to verify it.
+        ok, reason = gate.check_repin_governance(
+            "test-tombstone/2320-dead-coverage", {self.BASELINE_PATH}, self.BASELINE_PATH,
+        )
+        assert ok is False
+        assert "not supplied" in reason
+
+    def test_tombstone_branch_with_valid_change_is_authorized(self):
+        ok, reason = gate.check_repin_governance(
+            "test-tombstone/2320-dead-coverage", {self.BASELINE_PATH}, self.BASELINE_PATH,
+            old_baseline=self._old(), new_baseline=self._new_valid(),
+        )
+        assert ok is True
+
+    def test_tombstone_branch_smuggling_a_repin_is_refused(self):
+        sneaky = self._new_valid()
+        sneaky["expected_pass"] = ["stable.test_a"]  # dropped without a tombstone
+        ok, reason = gate.check_repin_governance(
+            "test-tombstone/2320-dead-coverage", {self.BASELINE_PATH}, self.BASELINE_PATH,
+            old_baseline=self._old(), new_baseline=sneaky,
+        )
+        assert ok is False
+        assert "not tombstone-only" in reason
+
+    def test_ordinary_branch_still_refused_regardless_of_baseline_content(self):
+        # An ordinary (non-governed) branch attempting the narrow exception
+        # by naming convention alone must still be refused (TASK-2320 AC:
+        # "an attempt to tombstone/narrow-re-pin on an ordinary branch being
+        # refused same as today's baseline-touch guard").
+        ok, reason = gate.check_repin_governance(
+            "ci/2311-fix-thumb-test", {self.BASELINE_PATH}, self.BASELINE_PATH,
+            old_baseline=self._old(), new_baseline=self._new_valid(),
+        )
+        assert ok is False
+        assert "upstream-sync" in reason
+        assert "test-tombstone" in reason
+
+    def test_upstream_sync_branch_may_still_touch_tombstones_directly(self):
+        # The full re-pin path remains a superset — an upstream-sync PR can
+        # touch tombstones (or anything else) without going through the
+        # narrow verification, same as TASK-2302's existing behavior.
+        ok, reason = gate.check_repin_governance(
+            "upstream-sync/2026-08-01", {self.BASELINE_PATH}, self.BASELINE_PATH,
+        )
+        assert ok is True
+
+
 # --- two-step re-pin governance ---------------------------------------------
 
 class TestRepinGovernance:
@@ -478,3 +692,34 @@ class TestCliRepinGuard:
             "--changed-file", ".github/geonode-baseline.json",
         ])
         assert rc == 1
+
+    def test_repin_guard_cli_tombstone_branch_round_trip(self, tmp_path, capsys):
+        # TASK-2320: --old-baseline/--new-baseline wiring, end to end.
+        old = {
+            "known_tests": ["stable.test_a", "deleted.test_z"],
+            "expected_pass": ["stable.test_a", "deleted.test_z"],
+            "suites": ["main"],
+            "pinned_at": "2026-07-19T00:00:00+00:00",
+            "soak_runs_sampled": 14,
+            "tombstones": {},
+        }
+        new = dict(old)
+        new["tombstones"] = {
+            "deleted.test_z": {"reason": "dead coverage removed", "ticket": "TASK-2320", "date": "2026-07-19"},
+        }
+        old_path = tmp_path / "old_baseline.json"
+        new_path = tmp_path / "new_baseline.json"
+        gate.save_baseline(old, old_path)
+        gate.save_baseline(new, new_path)
+
+        rc = gate.main([
+            "repin-guard",
+            "--branch", "test-tombstone/2320-dead-coverage",
+            "--baseline-path", ".github/geonode-baseline.json",
+            "--changed-file", ".github/geonode-baseline.json",
+            "--old-baseline", str(old_path),
+            "--new-baseline", str(new_path),
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "tombstone-only change verified" in out

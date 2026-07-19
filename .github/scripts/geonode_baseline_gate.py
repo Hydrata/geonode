@@ -19,6 +19,23 @@ open-ended upstream-fixing detour. Instead:
     (TASK-2293) — never silently promoted into the green baseline, and never
     silently used to fail a PR either. See ``compare()``.
 
+Tombstones (TASK-2320, epic 2290 W3): a legitimate test DELETION (upstream
+removed it, or a Hydrata cleanup PR deleted dead coverage) is otherwise
+indistinguishable, from TSV data alone, from a suite that silently stopped
+running -- both look like "baseline-expected-pass test absent from this
+run", which compare() must keep treating as a regression by default (a
+suite crash must never pass silently). A ``tombstones`` entry in the
+baseline JSON is the escape hatch: it excludes a specific, named test from
+``missing_from_run`` -- see compare() -- while its continued absence stays
+verified on EVERY subsequent run (a tombstoned test that reappears is
+itself flagged, ``tombstone_still_present``, so a false or stale tombstone
+claim cannot silently mask a real regression). Tombstones may be added
+either via the full ``upstream-sync/*`` re-pin path, or via the narrower
+``test-tombstone/*`` exception (see ``check_tombstone_only_change()``) that
+skips the soak-maturity bar because it strictly narrows an existing claim
+rather than adding a new one -- but is mechanically restricted to touching
+nothing but well-formed ``tombstones`` additions.
+
 Two-step re-pin governance (brief §3 R6): an upstream-merge PR that also
 carries Hydrata changes could re-pin the baseline and quietly absorb a real
 regression as "new normal". The baseline file may only move on a PR that is
@@ -80,6 +97,10 @@ PASS_STATUSES = frozenset({"passed", "xfail"})
 # marker on a test that is otherwise fine) is not evidence the new test is
 # broken — only an actual failed/error status on a new test gates the PR.
 NEW_TEST_INFORMATIONAL_STATUSES = frozenset({"skipped", "xpass"})
+
+# TASK-2320 (epic 2290 W3): fields required on every tombstone entry — see
+# the "Tombstones" section below.
+TOMBSTONE_REQUIRED_FIELDS = ("reason", "ticket", "date")
 
 
 class SoakImmatureError(RuntimeError):
@@ -250,18 +271,39 @@ def compare(current, baseline):
       missing_from_run       -- baseline-expected-pass tests that are absent
                                 from this run entirely (a suite that didn't
                                 run is itself a regression signal, not
-                                silence)
-      ok                     -- True iff regressions, new_test_failures and
-                                missing_from_run are all empty
-                                (new_test_informational never affects ok)
+                                silence) -- EXCLUDES tombstoned tests (see
+                                below); a tombstoned test being absent is the
+                                expected, intended state, not a regression.
+      tombstone_still_present -- tombstoned tests (baseline["tombstones"])
+                                that STILL show up in this run (TASK-2320). A
+                                tombstone is a claim "this test was
+                                deliberately deleted" — if it keeps appearing,
+                                the claim is false (a stale tombstone, a
+                                rename collision, or the test merely started
+                                failing and someone tried to tombstone it
+                                instead of fixing it) and the run must NOT go
+                                green regardless of the reported status,
+                                whether that's a failure OR a pass: this gate
+                                enforces "this test genuinely doesn't exist
+                                anymore" continuously, on every subsequent
+                                run, rather than trusting a one-time
+                                assertion at tombstone-creation time.
+      ok                     -- True iff regressions, new_test_failures,
+                                missing_from_run and tombstone_still_present
+                                are all empty (new_test_informational never
+                                affects ok)
     """
     known_tests = set(baseline["known_tests"])
     expected_pass = set(baseline["expected_pass"])
+    tombstones = set(baseline.get("tombstones", {}))
 
     regressions = sorted(
         t for t in expected_pass if t in current and current[t] not in PASS_STATUSES
     )
-    missing_from_run = sorted(t for t in expected_pass if t not in current)
+    missing_from_run = sorted(
+        t for t in expected_pass if t not in current and t not in tombstones
+    )
+    tombstone_still_present = sorted(t for t in tombstones if t in current)
     new_tests_not_passing = {
         t: current[t] for t in current if t not in known_tests and current[t] not in PASS_STATUSES
     }
@@ -277,7 +319,8 @@ def compare(current, baseline):
         "new_test_failures": new_test_failures,
         "new_test_informational": new_test_informational,
         "missing_from_run": missing_from_run,
-        "ok": not (regressions or new_test_failures or missing_from_run),
+        "tombstone_still_present": tombstone_still_present,
+        "ok": not (regressions or new_test_failures or missing_from_run or tombstone_still_present),
     }
 
 
@@ -292,6 +335,12 @@ def format_report(result):
     if result["new_test_failures"]:
         lines.append(f"NEW-TEST FAILURES ({len(result['new_test_failures'])}) — not in baseline, must be green:")
         lines.extend(f"  - {t}" for t in result["new_test_failures"])
+    if result.get("tombstone_still_present"):
+        lines.append(
+            f"TOMBSTONE STILL PRESENT ({len(result['tombstone_still_present'])}) — marked deliberately-deleted "
+            f"but still appears in this run (false tombstone claim, or the test merely started failing):"
+        )
+        lines.extend(f"  - {t}" for t in result["tombstone_still_present"])
     if result.get("new_test_informational"):
         lines.append(
             f"NEW-TEST INFORMATIONAL ({len(result['new_test_informational'])}) — not in baseline, "
@@ -314,24 +363,128 @@ def format_report(result):
 # closes the R6 hole that an ORDINARY Hydrata PR could quietly re-pin.
 UPSTREAM_SYNC_BRANCH_PREFIX = "upstream-sync/"
 
+# TASK-2320 (epic 2290 W3): the narrower re-pin exception class for a
+# LEGITIMATE test deletion. compare()'s missing_from_run treats any
+# baseline-expected-pass test absent from the current run as a regression —
+# correct when a suite crashed, wrong when the test was deliberately removed
+# (an upstream merge dropped it, or a Hydrata cleanup PR deleted dead
+# coverage). Without an escape hatch, a legitimate cleanup PR is stuck
+# permanently red until the next full re-pin (which itself needs
+# >=MIN_MATURE_RUNS soak nights — see compute_baseline()). A tombstone entry
+# is strictly NARROWING an existing claim ("this test no longer needs to
+# pass because it no longer exists"), not adding a new one, so the
+# flake-risk the soak-maturity bar protects against doesn't apply the same
+# way — this branch class is authorized WITHOUT that bar, but ONLY for a
+# change that check_tombstone_only_change() verifies touches nothing but
+# `tombstones`, and only by ADDING entries (see there for why removing/
+# editing an existing tombstone stays behind the full upstream-sync path).
+TOMBSTONE_BRANCH_PREFIX = "test-tombstone/"
 
-def check_repin_governance(branch_name, changed_files, baseline_relpath):
-    """Two-step re-pin governance check (TASK-2302 AC3).
+
+def check_tombstone_only_change(old_baseline, new_baseline):
+    """True iff old_baseline -> new_baseline only ADDS well-formed tombstone
+    entries; every other field (known_tests, expected_pass, suites, ...) is
+    byte-identical and no existing tombstone was removed or edited.
+
+    This is the mechanical "not just an assertion" verification TASK-2320
+    requires: a tombstone claims a specific known_tests entry was
+    deliberately deleted. This function cannot see the actual code diff (the
+    comparator is deliberately dependency-free and operates only on TSV/JSON
+    data — see the module docstring), so it enforces what it CAN verify
+    structurally: the tombstoned id must already be a known_tests entry (you
+    can only tombstone a test that existed), the change may not touch
+    anything else a full re-pin would (so a tombstone-branch PR cannot smuggle
+    a real re-pin through the narrow exception), and every tombstone entry
+    must carry reason/ticket/date (auditability). The ONGOING half of the
+    verification — does the test actually stay gone — is enforced every
+    later run by compare()'s tombstone_still_present check, not here.
+
+    Returns (ok: bool, reason: str).
+    """
+    unchanged_fields = ("known_tests", "expected_pass", "suites", "pinned_at", "soak_runs_sampled")
+    for key in unchanged_fields:
+        if old_baseline.get(key) != new_baseline.get(key):
+            return False, (
+                f"{key!r} differs between old and new baseline — a tombstone-only change "
+                f"may not touch anything but 'tombstones' (that's what makes it exempt from "
+                f"the full soak-maturity re-pin bar; if you need to change {key!r} too, use "
+                f"the {UPSTREAM_SYNC_BRANCH_PREFIX}* path instead)."
+            )
+
+    old_tombstones = old_baseline.get("tombstones", {}) or {}
+    new_tombstones = new_baseline.get("tombstones", {}) or {}
+
+    for test_id, entry in old_tombstones.items():
+        if new_tombstones.get(test_id) != entry:
+            return False, (
+                f"tombstone {test_id!r} was removed or edited — a tombstone-only change may "
+                f"only ADD new entries, never remove or modify an existing one (that's a "
+                f"re-pin-shaped change and stays behind the {UPSTREAM_SYNC_BRANCH_PREFIX}* path)."
+            )
+
+    added = sorted(set(new_tombstones) - set(old_tombstones))
+    if not added:
+        return False, "no new tombstone entries were added — nothing for this exception to authorize."
+
+    known_tests = set(old_baseline.get("known_tests", []))
+    for test_id in added:
+        entry = new_tombstones[test_id]
+        if test_id not in known_tests:
+            return False, (
+                f"tombstone {test_id!r} is not in known_tests — nothing to tombstone (either a "
+                f"typo, or this was never a baseline-tracked test)."
+            )
+        missing_fields = [f for f in TOMBSTONE_REQUIRED_FIELDS if not entry.get(f)]
+        if missing_fields:
+            return False, f"tombstone {test_id!r} is missing required field(s): {missing_fields}"
+
+    return True, f"ok — {len(added)} new tombstone(s) added ({', '.join(added)}), nothing else changed."
+
+
+def check_repin_governance(branch_name, changed_files, baseline_relpath, *, old_baseline=None, new_baseline=None):
+    """Two-step re-pin governance check (TASK-2302 AC3), plus the TASK-2320
+    tombstone-only narrow exception.
+
+    ``old_baseline``/``new_baseline`` are optional parsed baseline dicts
+    (e.g. ``json.load``ed from the PR's base ref and head ref respectively).
+    They are only consulted for a ``TOMBSTONE_BRANCH_PREFIX`` branch that
+    touches the baseline — every other case behaves exactly as before
+    (TASK-2302), so existing callers that never pass them are unaffected.
 
     Returns (ok: bool, reason: str). Raises nothing — callers (CLI, CI step)
     decide how to surface a False result.
     """
     baseline_touched = baseline_relpath in changed_files
-    is_upstream_sync = branch_name.startswith(UPSTREAM_SYNC_BRANCH_PREFIX)
+    if not baseline_touched:
+        return True, "ok"
 
-    if baseline_touched and not is_upstream_sync:
-        return False, (
-            f"{baseline_relpath} is changed on branch {branch_name!r}, which is not an "
-            f"{UPSTREAM_SYNC_BRANCH_PREFIX}* branch. The baseline may only be re-pinned "
-            f"in the dedicated upstream-sync PR (brief R6: upstream-merge+re-pin in PR 1, "
-            f"Hydrata work in PR 2) — split this change into two PRs."
-        )
-    return True, "ok"
+    if branch_name.startswith(UPSTREAM_SYNC_BRANCH_PREFIX):
+        return True, "ok"
+
+    if branch_name.startswith(TOMBSTONE_BRANCH_PREFIX):
+        if old_baseline is None or new_baseline is None:
+            return False, (
+                f"{baseline_relpath} is changed on a {TOMBSTONE_BRANCH_PREFIX}* branch, but the "
+                f"old/new baseline content was not supplied to verify the change is tombstone-only "
+                f"— refusing rather than trusting the branch name alone (TASK-2320: a tombstone "
+                f"claim must be verifiable, not just asserted)."
+            )
+        ok, reason = check_tombstone_only_change(old_baseline, new_baseline)
+        if not ok:
+            return False, (
+                f"{baseline_relpath} is changed on a {TOMBSTONE_BRANCH_PREFIX}* branch, but the "
+                f"change is not tombstone-only: {reason}"
+            )
+        return True, f"ok (tombstone-only change verified: {reason})"
+
+    return False, (
+        f"{baseline_relpath} is changed on branch {branch_name!r}, which is neither an "
+        f"{UPSTREAM_SYNC_BRANCH_PREFIX}* branch (full re-pin) nor a {TOMBSTONE_BRANCH_PREFIX}* "
+        f"branch (TASK-2320 tombstone-only narrow exception). The baseline may only be re-pinned "
+        f"in the dedicated upstream-sync PR (brief R6: upstream-merge+re-pin in PR 1, Hydrata work "
+        f"in PR 2), or narrowed via a tombstone-only PR for a legitimate test deletion — split this "
+        f"change into a dedicated PR of one of those two shapes."
+    )
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -447,7 +600,18 @@ def _cmd_check(args):
 
 
 def _cmd_repin_guard(args):
-    ok, reason = check_repin_governance(args.branch, set(args.changed_file), args.baseline_path)
+    # TASK-2320: --old-baseline/--new-baseline are optional and only needed
+    # to authorize a TOMBSTONE_BRANCH_PREFIX branch (see
+    # check_repin_governance's docstring) -- e.g. the CI step would fetch
+    # --old-baseline via `git show <base-ref>:<baseline-path>` and pass the
+    # checked-out working-tree copy as --new-baseline. Every other branch
+    # shape ignores them entirely, same behavior as before this task.
+    old_baseline = load_baseline(args.old_baseline) if args.old_baseline else None
+    new_baseline = load_baseline(args.new_baseline) if args.new_baseline else None
+    ok, reason = check_repin_governance(
+        args.branch, set(args.changed_file), args.baseline_path,
+        old_baseline=old_baseline, new_baseline=new_baseline,
+    )
     print(reason)
     return 0 if ok else 1
 
@@ -478,6 +642,12 @@ def main(argv=None):
     p_guard.add_argument("--branch", required=True)
     p_guard.add_argument("--baseline-path", required=True, help="baseline file path relative to repo root")
     p_guard.add_argument("--changed-file", action="append", required=True, dest="changed_file")
+    p_guard.add_argument("--old-baseline", type=Path, default=None,
+                          help="TASK-2320: baseline JSON as of the PR base ref -- only consulted to authorize "
+                               "a %s* branch" % TOMBSTONE_BRANCH_PREFIX)
+    p_guard.add_argument("--new-baseline", type=Path, default=None,
+                          help="TASK-2320: baseline JSON as of the PR head ref (working tree) -- paired with "
+                               "--old-baseline")
     p_guard.set_defaults(func=_cmd_repin_guard)
 
     args = parser.parse_args(argv)

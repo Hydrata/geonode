@@ -46,6 +46,16 @@ requirements*.txt                    @davekennewell
 # this line is a placeholder that starts protecting the file the moment it's
 # created, closing the window where a first commit could land it unreviewed.
 # Update this path if 2302 names the file differently.
+#
+# TASK-2320 (W3): this same path also carries the "tombstones" dict (a
+# legitimate-test-deletion record — see geonode_baseline_gate.py's module
+# docstring). Two branch conventions may touch it: `upstream-sync/*` (full
+# re-pin, TASK-2302) and `test-tombstone/*` (narrow tombstone-only
+# exception, TASK-2320) — both are still gated by this CODEOWNERS line
+# (human review) regardless of branch; geonode_baseline_gate.py's
+# check_repin_governance()/check_tombstone_only_change() is a SEPARATE,
+# additional CI-enforced check of *which* branch shape is allowed to
+# contain the change, not a substitute for this human-review gate.
 /.github/geonode-baseline.json        @davekennewell
 
 # Self-guard — must stay the human, always, or the guard removes itself.
