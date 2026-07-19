@@ -180,6 +180,7 @@ jobs:
       - name: Enforce two-step re-pin governance
         env:
           HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           CHANGED_ARGS=()
           while IFS= read -r -d '' f; do
@@ -191,10 +192,27 @@ jobs:
             exit 0
           fi
 
+          BASELINE_PATH=".github/geonode-baseline.json"
+          # TASK-2320 (W3 review W3R-2/F4): the tombstone-only exception needs
+          # the OLD (base-ref) and NEW (working-tree) baseline CONTENT to verify
+          # the change adds only tombstones. Without them check_repin_governance
+          # fail-CLOSES every test-tombstone/* PR — the exception could never
+          # authorize anything, which is the bug: this step previously called
+          # repin-guard with neither flag. Supply both whenever the baseline
+          # exists on both sides (the CLI consults them only for a
+          # test-tombstone/* branch; harmless otherwise). git show reads the
+          # base-ref copy without a second checkout.
+          BASELINE_ARGS=()
+          if [ -f "$BASELINE_PATH" ] && git cat-file -e "origin/$BASE_REF:$BASELINE_PATH" 2>/dev/null; then
+            git show "origin/$BASE_REF:$BASELINE_PATH" > "$RUNNER_TEMP/old-baseline.json"
+            BASELINE_ARGS=(--old-baseline "$RUNNER_TEMP/old-baseline.json" --new-baseline "$BASELINE_PATH")
+          fi
+
           python3 .github/scripts/geonode_baseline_gate.py repin-guard \
             --branch "$HEAD_REF" \
-            --baseline-path ".github/geonode-baseline.json" \
-            "${CHANGED_ARGS[@]}"
+            --baseline-path "$BASELINE_PATH" \
+            "${CHANGED_ARGS[@]}" \
+            "${BASELINE_ARGS[@]}"
 
   differential_green:
     name: Differential-green comparator (TASK-2302, informational until baseline is pinned)

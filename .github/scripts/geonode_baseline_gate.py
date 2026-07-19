@@ -383,7 +383,7 @@ TOMBSTONE_BRANCH_PREFIX = "test-tombstone/"
 
 def check_tombstone_only_change(old_baseline, new_baseline):
     """True iff old_baseline -> new_baseline only ADDS well-formed tombstone
-    entries; every other field (known_tests, expected_pass, suites, ...) is
+    entries; every other field (i.e. everything except 'tombstones') is
     byte-identical and no existing tombstone was removed or edited.
 
     This is the mechanical "not just an assertion" verification TASK-2320
@@ -401,15 +401,24 @@ def check_tombstone_only_change(old_baseline, new_baseline):
 
     Returns (ok: bool, reason: str).
     """
-    unchanged_fields = ("known_tests", "expected_pass", "suites", "pinned_at", "soak_runs_sampled")
-    for key in unchanged_fields:
-        if old_baseline.get(key) != new_baseline.get(key):
-            return False, (
-                f"{key!r} differs between old and new baseline — a tombstone-only change "
-                f"may not touch anything but 'tombstones' (that's what makes it exempt from "
-                f"the full soak-maturity re-pin bar; if you need to change {key!r} too, use "
-                f"the {UPSTREAM_SYNC_BRANCH_PREFIX}* path instead)."
-            )
+    # Everything EXCEPT 'tombstones' must be byte-identical. Comparing the whole
+    # document (minus tombstones) rather than a hand-listed allowlist is
+    # deliberate (W3 review): an allowlist silently permits any FUTURE baseline
+    # field — a quarantine list, a version stamp, per-suite metadata — to be
+    # added, edited or deleted through this narrow exception undetected, which is
+    # exactly the smuggling channel this function exists to close. (The old
+    # allowlist even carried a phantom 'suites' key compute_baseline never emits.)
+    old_rest = {k: v for k, v in old_baseline.items() if k != "tombstones"}
+    new_rest = {k: v for k, v in new_baseline.items() if k != "tombstones"}
+    if old_rest != new_rest:
+        changed = sorted(k for k in set(old_rest) | set(new_rest) if old_rest.get(k) != new_rest.get(k))
+        return False, (
+            f"fields other than 'tombstones' differ between old and new baseline "
+            f"({', '.join(repr(k) for k in changed)}) — a tombstone-only change may not touch "
+            f"anything but 'tombstones' (that's what makes it exempt from the full "
+            f"soak-maturity re-pin bar; if you need to change those too, use the "
+            f"{UPSTREAM_SYNC_BRANCH_PREFIX}* path instead)."
+        )
 
     old_tombstones = old_baseline.get("tombstones", {}) or {}
     new_tombstones = new_baseline.get("tombstones", {}) or {}
