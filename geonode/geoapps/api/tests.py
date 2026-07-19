@@ -82,9 +82,7 @@ class GeoAppsApiTests(APITestCase):
         # assertion still wrapped the response in json.loads() and had drifted
         # stale since that fix landed — the API contract is intentional, the
         # test was not updated to match it.
-        self.assertEqual(
-            response.data["geoapps"][0]["data"], {"test_data": {"test": ["test_1", "test_2", "test_3"]}}
-        )
+        self.assertEqual(response.data["geoapps"][0]["data"], {"test_data": {"test": ["test_1", "test_2", "test_3"]}})
 
     def test_geoapp_listing_advertised(self):
         app = GeoApp.objects.first()
