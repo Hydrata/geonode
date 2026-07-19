@@ -75,9 +75,14 @@ class GeoAppsApiTests(APITestCase):
         # Pagination
         self.assertEqual(len(response.data["geoapps"]), 1)
         self.assertTrue("data" in response.data["geoapps"][0])
-        self.assertEqual(
-            json.loads(response.data["geoapps"][0]["data"]), {"test_data": {"test": ["test_1", "test_2", "test_3"]}}
-        )
+        # TASK-2316: DataBlobSerializer.to_representation (geonode/base/api/
+        # serializers.py, Hydrata commit 9999c8684 "parse string blobs in
+        # DataBlobSerializer to prevent map viewer failures") always returns
+        # the blob as an already-parsed dict, never a raw JSON string. This
+        # assertion still wrapped the response in json.loads() and had drifted
+        # stale since that fix landed — the API contract is intentional, the
+        # test was not updated to match it.
+        self.assertEqual(response.data["geoapps"][0]["data"], {"test_data": {"test": ["test_1", "test_2", "test_3"]}})
 
     def test_geoapp_listing_advertised(self):
         app = GeoApp.objects.first()
