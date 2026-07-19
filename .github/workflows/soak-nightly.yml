@@ -74,9 +74,17 @@ jobs:
               ./tests/test.sh geonode.tests.smoke geonode.tests.test_rest_api geonode.tests.test_search
               geonode.tests.test_utils geonode.tests.test_headers --duration=30
           - name: main
+            # geonode.api excluded (TASK-2302 finding B): it's in
+            # GEONODE_CORE_APPS and passes this filter, but the rest_apis
+            # matrix entry below ALSO explicitly runs geonode.api.tests —
+            # the same test IDs turning up in two suites' TSVs crashes the
+            # differential-green comparator's load_run() (raises on any
+            # overlap). Keep this exclusion in sync with tests.yml's `main`
+            # job and differential_green job, which run the identical
+            # computation.
             command: >
               TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
-              for a in settings.GEONODE_APPS if "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
+              for a in settings.GEONODE_APPS if a != "geonode.api" and "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
               ./tests/test.sh $TESTS geonode.thumbs.tests geonode.people.tests geonode.people.socialaccount.providers.geonode_openid_connect.tests --duration=30
           - name: security
             command: >
