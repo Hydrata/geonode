@@ -296,9 +296,12 @@ class TestMkdtemp(TestCase):
         # happen outside the patched scope.
         base = tempfile.mkdtemp()
         try:
-            with patch("geonode.utils.time.sleep") as mock_sleep, patch(
-                "geonode.utils.tempfile.mkdtemp", side_effect=PermissionError("mock: dir not writable")
-            ) as mock_mkdtemp:
+            with (
+                patch("geonode.utils.time.sleep") as mock_sleep,
+                patch(
+                    "geonode.utils.tempfile.mkdtemp", side_effect=PermissionError("mock: dir not writable")
+                ) as mock_mkdtemp,
+            ):
                 with self.assertRaises(OSError):
                     mkdtemp(dir=base)
                 # Bounded: the underlying tempfile.mkdtemp was retried exactly
