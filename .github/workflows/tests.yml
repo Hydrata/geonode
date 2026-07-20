@@ -353,6 +353,35 @@ jobs:
         run: docker compose --env-file .env_test -f docker-compose-test.yml down -v
 
   # -------------------------------------------------
+  # TASK-2329 (epic 2290 W4): fleet marker/quarantine taxonomy lint. Pure
+  # static AST/regex scan — no DB, no docker, no install — so it runs as a thin
+  # checkout+python step with nothing provisioned. The script is VENDORED at
+  # .github/scripts/marker_lint.py (canonical source: Hydrata/deploy
+  # scripts/marker_lint.py), the SAME precedent as this repo's vendored
+  # geonode_baseline_gate.py: the PR-scoped GITHUB_TOKEN cannot check out the
+  # private Hydrata/deploy, and fork PRs cannot be given a PAT either, so the
+  # gate must live in-repo. Cap pins the CURRENT baseline (1 conditional-skip)
+  # as the interim ceiling to ratchet DOWN. NOT a required check this wave
+  # (green-then-require; the require-flip is a separate operator step).
+  # -------------------------------------------------
+  marker_lint:
+    name: Marker taxonomy lint (TASK-2329)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Marker taxonomy lint (static scan, no deps)
+        run: python .github/scripts/marker_lint.py --repo . --check --cap conditional-skip=1
+
+  # -------------------------------------------------
   # CLEANUP JOB: REMOVE ALL ARTIFACTS AT THE END
   # -------------------------------------------------
   cleanup:
