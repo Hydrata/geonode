@@ -167,7 +167,23 @@ def create_gs_dataset(name, title, geometry_type, attributes=None):
     cat = gs_catalog
 
     # get workspace and store
-    workspace = cat.get_default_workspace()
+    # TASK-2329: guard the fresh-GeoServer / CI case. get_default_workspace()
+    # resolves GeoServer's own internal "default workspace" catalog pointer,
+    # which 404s -> None whenever no workspace has been explicitly marked default
+    # (a fresh/CI provision); get_or_create_datastore(cat, None) then fails
+    # opaquely. Fall back to settings.DEFAULT_WORKSPACE (the resolution every
+    # other geonode-core workspace lookup uses) and fail loudly if neither
+    # exists. Mirrors the Hydrata app override in
+    # apps/{gn_anuga,swamm}/overrides/geoserver/createlayer/utils.py.
+    workspace = cat.get_default_workspace() or cat.get_workspace(getattr(settings, "DEFAULT_WORKSPACE", "geonode"))
+    if workspace is None:
+        msg = (
+            f"GeoServer has no default workspace and no workspace named "
+            f"{getattr(settings, 'DEFAULT_WORKSPACE', 'geonode')!r} "
+            f"(settings.DEFAULT_WORKSPACE) -- cannot create a layer without it."
+        )
+        logger.error(msg)
+        raise GeoNodeException(msg)
 
     # get (or create the datastore)
     datastore = get_or_create_datastore(cat, workspace)

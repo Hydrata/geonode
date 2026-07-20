@@ -19,6 +19,8 @@
 
 import os
 
+from unittest import mock
+
 from django.conf import settings
 from django.urls import reverse
 
@@ -29,7 +31,7 @@ from geonode.layers.models import Dataset
 from geonode.decorators import on_ogc_backend
 from geonode.geoserver.signals import gs_catalog
 
-from .utils import create_dataset
+from .utils import create_dataset, create_gs_dataset
 
 
 class CreateLayerCoreTest(GeoNodeBaseTestSupport):
@@ -103,6 +105,22 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
         """
         with self.assertRaises(GeoNodeException):
             create_dataset("wrong_geom_dataset", "A layer with wrong geometry", "bobby", "wrong_geometry")
+
+    def test_create_gs_dataset_no_workspace_raises(self):
+        """
+        TASK-2329: on a fresh/CI GeoServer with no default workspace and no
+        settings.DEFAULT_WORKSPACE workspace, create_gs_dataset must fail loudly
+        (GeoNodeException) instead of calling get_or_create_datastore with a
+        None workspace. Mocks the catalog so no live GeoServer is needed.
+        """
+        fake_cat = mock.MagicMock()
+        fake_cat.get_default_workspace.return_value = None
+        fake_cat.get_workspace.return_value = None
+        with mock.patch("geonode.geoserver.createlayer.utils.gs_catalog", fake_cat):
+            with self.assertRaises(GeoNodeException):
+                create_gs_dataset("no_ws_dataset", "A layer with no workspace", "Point")
+        # guard tripped before any datastore work
+        fake_cat.get_or_create_datastore.assert_not_called()
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_dataset_creation_with_attributes(self):
