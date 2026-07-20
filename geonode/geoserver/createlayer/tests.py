@@ -108,13 +108,14 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
 
     def test_create_gs_dataset_no_workspace_raises(self):
         """
-        TASK-2329: on a fresh/CI GeoServer with no default workspace and no
-        settings.DEFAULT_WORKSPACE workspace, create_gs_dataset must fail loudly
+        TASK-2329: on a fresh/CI GeoServer with no workspace named
+        settings.DEFAULT_WORKSPACE, create_gs_dataset must fail loudly
         (GeoNodeException) instead of calling get_or_create_datastore with a
-        None workspace. Mocks the catalog so no live GeoServer is needed.
+        None workspace. cat.get_workspace(name) returns None on not-found (the
+        real gsconfig behaviour the impl relies on). Mocks the catalog so no
+        live GeoServer is needed.
         """
         fake_cat = mock.MagicMock()
-        fake_cat.get_default_workspace.return_value = None
         fake_cat.get_workspace.return_value = None
         with mock.patch("geonode.geoserver.createlayer.utils.gs_catalog", fake_cat):
             with self.assertRaises(GeoNodeException):
