@@ -17,6 +17,9 @@
 #
 #########################################################################
 import copy
+import os
+import shutil
+import tempfile
 from unittest import TestCase
 
 from unittest.mock import patch
@@ -31,7 +34,7 @@ from geonode.layers.models import Attribute
 from geonode.geoserver.helpers import set_attributes
 from geonode.tests.base import GeoNodeBaseTestSupport
 from geonode.br.management.commands.utils.utils import ignore_time
-from geonode.utils import copy_tree, bbox_to_wkt
+from geonode.utils import copy_tree, bbox_to_wkt, mkdtemp, MKDTEMP_MAX_ATTEMPTS
 
 
 class TestCopyTree(GeoNodeBaseTestSupport):
@@ -267,3 +270,43 @@ class TestRegionsCrossingDateLine(TestCase):
         _, wkt = bbox_across_idl.split(";")
         poly = GEOSGeometry(wkt, srid=4326)
         self.assertEqual(poly.geom_type, "MultiPolygon", f"Expexted 'MultiPolygon' type but received {poly.geom_type}")
+
+
+class TestMkdtemp(TestCase):
+    """TASK-2317: mkdtemp() must fail loud and bounded, not hang forever."""
+
+    def test_mkdtemp_success_path_unchanged(self):
+        """A writable target dir still returns a real, empty temp directory."""
+        base = tempfile.mkdtemp()
+        try:
+            tempdir = mkdtemp(dir=base, prefix="testprefix")
+            try:
+                self.assertTrue(os.path.isdir(tempdir))
+                self.assertTrue(os.path.basename(tempdir).startswith("testprefix"))
+            finally:
+                shutil.rmtree(tempdir, ignore_errors=True)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_mkdtemp_unwritable_dir_raises_bounded(self):
+        """An unwritable target dir raises a clear, bounded OSError -- not an infinite loop."""
+        # Create the (real, writable) base dir *before* patching tempfile.mkdtemp
+        # -- patching "geonode.utils.tempfile.mkdtemp" patches the tempfile
+        # module globally (it's the same module object), so this setup must
+        # happen outside the patched scope.
+        base = tempfile.mkdtemp()
+        try:
+            with (
+                patch("geonode.utils.time.sleep") as mock_sleep,
+                patch(
+                    "geonode.utils.tempfile.mkdtemp", side_effect=PermissionError("mock: dir not writable")
+                ) as mock_mkdtemp,
+            ):
+                with self.assertRaises(OSError):
+                    mkdtemp(dir=base)
+                # Bounded: the underlying tempfile.mkdtemp was retried exactly
+                # MKDTEMP_MAX_ATTEMPTS times, not forever.
+                self.assertEqual(mock_mkdtemp.call_count, MKDTEMP_MAX_ATTEMPTS)
+                self.assertTrue(mock_sleep.called)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)

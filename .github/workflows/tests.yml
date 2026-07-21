@@ -50,9 +50,15 @@ jobs:
     needs: [build_images, smoke]
     with:
       suite_name: "Main Tests"
+      # geonode.api is excluded here (TASK-2302 finding B): it's in
+      # GEONODE_CORE_APPS and passes this filter, but rest_apis (below)
+      # ALSO explicitly runs geonode.api.tests — the same test IDs in two
+      # suites' TSVs, which crashes the differential-green comparator's
+      # load_run() (it raises on any overlap; see geonode_baseline_gate.py).
+      # Keep this exclusion and rest_apis's explicit list in sync.
       test_command: >
         TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
-        for a in settings.GEONODE_APPS if "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
+        for a in settings.GEONODE_APPS if a != "geonode.api" and "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
         ./tests/test.sh $TESTS geonode.thumbs.tests geonode.people.tests geonode.people.socialaccount.providers.geonode_openid_connect.tests --duration=30 --failfast
 
   security:
@@ -101,6 +107,281 @@ jobs:
         ./tests/test.sh geonode.upload --duration=30 --failfast
 
   # -------------------------------------------------
+  # TASK-2302 (epic 2290 W2): differential-green comparator + two-step re-pin
+  # governance. Decision record: docs/reports/2026-07-18-q-1-geonode-
+  # differential-green.html (Hydrata/deploy) — geonode is an upstream fork
+  # and carries upstream-inherited reds, so it gates on NO-REGRESSION vs a
+  # governed baseline rather than absolute green. NEITHER job below is a
+  # required check yet (soak-immature tripwire, epic TASK-2290 constraint 2)
+  # — .github/geonode-baseline.json does not exist until the soak (TASK-2294)
+  # reaches >=14 days / >=14 runs (earliest 2026-07-31) AND the two known
+  # deterministic reds (TASK-2315/2316) are confirmed fixed in it. Until then
+  # `differential_green` is a no-op-with-notice, not a gate.
+  #
+  # The comparator (.github/scripts/geonode_baseline_gate.py) and its tests
+  # live IN this repo, under a path CODEOWNERS already protects
+  # (/.github/** — see .github/CODEOWNERS) — TASK-2302 fix-pass finding A.
+  # They used to be checked out from Hydrata/deploy on every run, which
+  # cannot work: Hydrata/deploy is private, the PR-scoped GITHUB_TOKEN is
+  # geonode-scoped and cannot read it, and fork PRs on this public repo
+  # cannot be given a PAT secret either. Vendoring the script here also
+  # closes finding E (re-pin governance's own control surface is now the
+  # same CODEOWNERS review that protects the baseline file it guards).
+  # -------------------------------------------------
+
+  comparator_selftest:
+    name: Comparator self-test (TASK-2302)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run comparator unit tests (hermetic — no DB, no docker)
+        run: |
+          # -p no:django: this repo's root pytest.ini sets
+          # DJANGO_SETTINGS_MODULE for the real test suites; the comparator
+          # is stdlib-only and must stay runnable with nothing installed, so
+          # explicitly skip pytest-django's settings bootstrap here.
+          pytest -p no:django .github/scripts/test_geonode_baseline_gate.py -v
+
+  repin_governance:
+    name: Two-step re-pin governance (TASK-2302)
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute changed files vs the PR base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch origin "$BASE_REF" --depth=1
+          # NUL-delimited to a file, not a GITHUB_OUTPUT string: filenames
+          # with spaces would word-split under the old `for f in $VAR` form,
+          # and interpolating the diff straight into a later run: block is
+          # itself the injection finding D describes for head_ref below.
+          git diff --name-only -z "origin/$BASE_REF"...HEAD > "$RUNNER_TEMP/changed_files.nul"
+
+      - name: Enforce two-step re-pin governance
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          CHANGED_ARGS=()
+          while IFS= read -r -d '' f; do
+            CHANGED_ARGS+=(--changed-file "$f")
+          done < "$RUNNER_TEMP/changed_files.nul"
+
+          if [ "${#CHANGED_ARGS[@]}" -eq 0 ]; then
+            echo "No changed files vs the PR base — nothing for the re-pin guard to inspect; passing."
+            exit 0
+          fi
+
+          BASELINE_PATH=".github/geonode-baseline.json"
+          # TASK-2320 (W3 review W3R-2/F4): the tombstone-only exception needs
+          # the OLD (base-ref) and NEW (working-tree) baseline CONTENT to verify
+          # the change adds only tombstones. Without them check_repin_governance
+          # fail-CLOSES every test-tombstone/* PR — the exception could never
+          # authorize anything, which is the bug: this step previously called
+          # repin-guard with neither flag. Supply both whenever the baseline
+          # exists on both sides (the CLI consults them only for a
+          # test-tombstone/* branch; harmless otherwise). git show reads the
+          # base-ref copy without a second checkout.
+          BASELINE_ARGS=()
+          if [ -f "$BASELINE_PATH" ] && git cat-file -e "origin/$BASE_REF:$BASELINE_PATH" 2>/dev/null; then
+            git show "origin/$BASE_REF:$BASELINE_PATH" > "$RUNNER_TEMP/old-baseline.json"
+            BASELINE_ARGS=(--old-baseline "$RUNNER_TEMP/old-baseline.json" --new-baseline "$BASELINE_PATH")
+          fi
+
+          python3 .github/scripts/geonode_baseline_gate.py repin-guard \
+            --branch "$HEAD_REF" \
+            --baseline-path "$BASELINE_PATH" \
+            "${CHANGED_ARGS[@]}" \
+            "${BASELINE_ARGS[@]}"
+
+  differential_green:
+    name: Differential-green comparator (TASK-2302, informational until baseline is pinned)
+    needs: [build_images, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check baseline exists (soak-immature tripwire)
+        id: baseline_check
+        run: |
+          if [ -f .github/geonode-baseline.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::.github/geonode-baseline.json not yet pinned (soak-immature per epic TASK-2290 constraint 2, earliest 2026-07-31) — differential-green is a no-op until then."
+          fi
+
+      - name: Download built Docker images
+        if: steps.baseline_check.outputs.exists == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: docker_images
+
+      - name: Load Docker images
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: docker load -i docker_images/django.tar
+
+      - name: Start the stack
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: docker compose --env-file .env_test -f docker-compose-test.yml up -d
+
+      - name: Setup test databases
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid();"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_postgres
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db createdb -U postgres -T postgres test_geonode_data
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          docker compose --env-file .env_test -f docker-compose-test.yml exec db psql -U postgres -d test_geonode_data -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+      # Run to COMPLETION (no --failfast), unlike the PR-gate suites above —
+      # a partial run cannot support a meaningful no-regression comparison
+      # (an early bail would report every untested-in-time baseline test as
+      # "missing", not "unknown"). Scoped to the two suites carrying the
+      # epic's two tracked deterministic reds (TASK-2315 [main], TASK-2316
+      # [rest_apis]) for now; widen suite coverage in a follow-up once the
+      # first baseline is pinned and the CI-minute cost is measured.
+      - name: Run main + rest_apis suites to completion
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          mkdir -p diff_results
+          docker compose --env-file .env_test -f docker-compose-test.yml exec -T django bash -s <<'BASH' 2>&1 | tee diff_results/main.log
+          set -uo pipefail
+          # geonode.api excluded — see the same exclusion + rationale on the
+          # `main` job's TESTS computation above (TASK-2302 finding B).
+          TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests" for a in settings.GEONODE_APPS if a != "geonode.api" and "security" not in a and "geoserver" not in a and "upload" not in a]))')
+          ./tests/test.sh $TESTS geonode.thumbs.tests geonode.people.tests geonode.people.socialaccount.providers.geonode_openid_connect.tests --duration=30
+          BASH
+          docker compose --env-file .env_test -f docker-compose-test.yml exec -T django bash -s <<'BASH' 2>&1 | tee diff_results/rest_apis.log
+          set -uo pipefail
+          ./tests/test.sh geonode.api.tests geonode.base.api.tests geonode.layers.api.tests geonode.maps.api.tests geonode.documents.api.tests geonode.geoapps.api.tests --duration=30
+          BASH
+
+      # Same parser as soak-nightly.yml's "Parse per-test results" step
+      # (TASK-2294) — kept as an inline duplicate rather than a shared
+      # action, matching this repo's existing per-workflow-file convention
+      # (see hydrata's test-nightly.yml vs test.yml for the same pattern).
+      - name: Parse per-test results to TSV
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          python3 - <<'PY'
+          import re
+          for suite in ("main", "rest_apis"):
+              log_path = f"diff_results/{suite}.log"
+              tsv_path = f"diff_results/{suite}.tsv"
+              HEADER = re.compile(r'^(test\w+)\s+\(([\w\.]+)\)')
+              STATUS = re.compile(r'\.\.\.\s+(ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)\s*$')
+              NORM = {'ok': 'passed', 'FAIL': 'failed', 'ERROR': 'error',
+                      'expected failure': 'xfail', 'unexpected success': 'xpass'}
+              def norm(tok):
+                  return 'skipped' if tok.startswith('skipped') else NORM.get(tok, 'unknown')
+              rows, current = [], None
+              try:
+                  with open(log_path, encoding='utf-8', errors='replace') as fh:
+                      for line in fh:
+                          line = line.rstrip('\n')
+                          h = HEADER.match(line)
+                          if h:
+                              current = h.group(2)
+                              s = STATUS.search(line)
+                              if s:
+                                  rows.append((current, norm(s.group(1))))
+                                  current = None
+                              continue
+                          if current:
+                              s = STATUS.search(line)
+                              if s:
+                                  rows.append((current, norm(s.group(1))))
+                                  current = None
+              except FileNotFoundError:
+                  pass
+              with open(tsv_path, 'w', encoding='utf-8') as out:
+                  out.write(f"# suite\t{suite}\n# run_utc\tpr-{'${{ github.sha }}'}\n")
+                  out.write("test_id\tstatus\n")
+                  for tid, st in rows:
+                      out.write(f"{tid}\t{st}\n")
+              print(f"[{suite}] parsed {len(rows)} tests -> {tsv_path}")
+          PY
+
+      - name: Run the differential-green comparator
+        if: steps.baseline_check.outputs.exists == 'true'
+        run: |
+          python3 .github/scripts/geonode_baseline_gate.py check \
+            --baseline .github/geonode-baseline.json \
+            --tsv diff_results/main.tsv \
+            --tsv diff_results/rest_apis.tsv
+
+      - name: Upload diff results artifact
+        if: always() && steps.baseline_check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-green-results-${{ github.run_id }}
+          path: diff_results/
+          retention-days: 21
+
+      - name: Dump docker logs on failure
+        if: failure() && steps.baseline_check.outputs.exists == 'true'
+        uses: jwalton/gh-docker-logs@v2
+
+      - name: Stop the stack
+        if: always() && steps.baseline_check.outputs.exists == 'true'
+        run: docker compose --env-file .env_test -f docker-compose-test.yml down -v
+
+  # -------------------------------------------------
+  # TASK-2329 (epic 2290 W4): fleet marker/quarantine taxonomy lint. Pure
+  # static AST/regex scan — no DB, no docker, no install — so it runs as a thin
+  # checkout+python step with nothing provisioned. The script is VENDORED at
+  # .github/scripts/marker_lint.py (canonical source: Hydrata/deploy
+  # scripts/marker_lint.py), the SAME precedent as this repo's vendored
+  # geonode_baseline_gate.py: the PR-scoped GITHUB_TOKEN cannot check out the
+  # private Hydrata/deploy, and fork PRs cannot be given a PAT either, so the
+  # gate must live in-repo. Cap pins the CURRENT baseline (1 conditional-skip)
+  # as the interim ceiling to ratchet DOWN. NOT a required check this wave
+  # (green-then-require; the require-flip is a separate operator step).
+  # -------------------------------------------------
+  marker_lint:
+    name: Marker taxonomy lint (TASK-2329)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Marker taxonomy lint (static scan, no deps)
+        run: python .github/scripts/marker_lint.py --repo . --check --cap conditional-skip=1
+
+  # -------------------------------------------------
   # CLEANUP JOB: REMOVE ALL ARTIFACTS AT THE END
   # -------------------------------------------------
   cleanup:
@@ -113,6 +394,7 @@ jobs:
       - rest_apis
       - csw
       - upload
+      - differential_green
     runs-on: ubuntu-24.04
     if: always()
     steps:

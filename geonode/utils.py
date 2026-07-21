@@ -252,11 +252,21 @@ class OGC_Servers_Handler:
         return [self[alias] for alias in self]
 
 
+# TASK-2317: mkdtemp() used to retry forever (no cap, no backoff) on any
+# exception -- e.g. a PermissionError when `dir` isn't writable by the
+# running user hangs the process indefinitely instead of failing loud.
+MKDTEMP_MAX_ATTEMPTS = 10
+MKDTEMP_RETRY_BACKOFF_SECONDS = 0.1
+
+
 def mkdtemp(dir=settings.MEDIA_ROOT, prefix=None, suffix=None):
     if not os.path.exists(dir):
         os.makedirs(dir, exist_ok=True)
     tempdir = None
+    attempts = 0
+    last_error = None
     while not tempdir:
+        attempts += 1
         try:
             tempdir = tempfile.mkdtemp(dir=dir, prefix=prefix, suffix=suffix)
             if os.path.exists(tempdir) and os.path.isdir(tempdir):
@@ -265,8 +275,15 @@ def mkdtemp(dir=settings.MEDIA_ROOT, prefix=None, suffix=None):
             else:
                 raise Exception("Directory does not exist or is not accessible")
         except Exception as e:
+            last_error = e
             logger.exception(e)
             tempdir = None
+            if attempts >= MKDTEMP_MAX_ATTEMPTS:
+                raise OSError(
+                    f"mkdtemp: giving up after {attempts} failed attempts to create a "
+                    f"usable temporary directory under {dir!r}: {last_error}"
+                ) from last_error
+            time.sleep(MKDTEMP_RETRY_BACKOFF_SECONDS * attempts)
     return tempdir
 
 
