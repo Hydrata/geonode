@@ -24,7 +24,7 @@ zipstream-ng==1.8.0
 cachetools==6.2.4
 
 # Django Apps
-django-allauth==0.63.6
+django-allauth==65.16.1
 django-appconf==1.0.6
 django-filter==24.2
 django-imagekit==5.0.0
