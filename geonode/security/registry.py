@@ -674,7 +674,10 @@ class _BulkPermPrefetch:
         (``PermissionsHandlerRegistry.user_can_*``) without their per-resource queries
         (Hydrata TASK-3841: ~6 per resource, 260 queries for one 5-scenario list):
 
-        - a superuser gets all three (each check returns True for one);
+        - a superuser gets all three (each check returns True for one) -- without
+          computing the group/members set first, so the legacy path's
+          Group.DoesNotExist (AUTO_ASSIGN_REGISTERED_MEMBERS... on, group missing)
+          cannot raise here;
         - the group managers set and the group-manager check depend only on the
           resource's owner and group, so they are computed once per (owner, group);
         - ``change_resourcebase_metadata`` comes from the prefetched checker, which is

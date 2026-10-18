@@ -716,6 +716,59 @@ class MapLayerPermsBulkTests(APITestCase):
             self.assertEqual(bulk, legacy)
             self.assertTrue(all("view_resourcebase" in perms for perms in bulk.values()))
 
+    def test_workflow_perms_parity_across_roles_and_workflow_settings(self):
+        # Hydrata TASK-3841: _BulkPermPrefetch.workflow_perms re-implements
+        # user_can_feature/approve/publish; every branch must match the legacy
+        # path -- group manager, metadata-only grantee, inactive user, owner,
+        # plain member, superuser -- under each workflow setting.
+        from django.contrib.auth import get_user_model
+        from geonode.groups.models import GroupMember, GroupProfile
+
+        User = get_user_model()
+        owner = User.objects.create_user("wf_owner", "wfo@t.com", "pw")
+        manager = User.objects.create_user("wf_manager", "wfm@t.com", "pw")
+        editor = User.objects.create_user("wf_editor", "wfe@t.com", "pw")
+        inactive = User.objects.create_user("wf_inactive", "wfi@t.com", "pw")
+        member = User.objects.create_user("wf_member", "wfme@t.com", "pw")
+        profile = GroupProfile.objects.create(title="wf3841", slug="wf3841")
+        profile.join(owner, role=GroupMember.MEMBER)
+        profile.join(manager, role=GroupMember.MANAGER)
+        profile.join(member, role=GroupMember.MEMBER)
+
+        in_group = create_single_dataset("wf_in_group", owner=owner)
+        no_group = create_single_dataset("wf_no_group", owner=owner)
+        Dataset.objects.filter(pk=in_group.pk).update(group=profile.group)
+        datasets = list(Dataset.objects.filter(pk__in=[in_group.pk, no_group.pk]).order_by("pk"))
+        for ds in datasets:
+            for user in (owner, manager, editor, inactive, member):
+                assign_perm("view_resourcebase", user, ds.get_self_resource())
+            assign_perm("change_resourcebase_metadata", editor, ds.get_self_resource())
+            assign_perm("change_resourcebase_metadata", inactive, ds.get_self_resource())
+        User.objects.filter(pk=inactive.pk).update(is_active=False)
+        inactive.refresh_from_db()
+
+        users = [
+            ("owner", owner),
+            ("group-manager", manager),
+            ("metadata-editor", editor),
+            ("inactive", inactive),
+            ("group-member", member),
+            ("superuser", self.superuser),
+        ]
+        for moderate in (False, True):
+            for publishing in (False, True):
+                with override_settings(ADMIN_MODERATE_UPLOADS=moderate, RESOURCE_PUBLISHING=publishing):
+                    for label, user in users:
+                        with self.subTest(user=label, moderate=moderate, publishing=publishing):
+                            cache.clear()
+                            legacy = {
+                                ds.pk: set(permissions_registry.get_perms(instance=ds, user=user, use_cache=False))
+                                for ds in datasets
+                            }
+                            cache.clear()
+                            bulk = permissions_registry.get_perms_bulk(datasets, user=user, use_cache=False)
+                            self.assertEqual({pk: set(v) for pk, v in bulk.items()}, legacy)
+
     # ---- integration: serializer pre-computes perms in bulk and matches ----
     def test_serializer_uses_bulk_perms(self):
         from rest_framework.test import APIRequestFactory
