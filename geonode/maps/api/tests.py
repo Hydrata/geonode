@@ -689,9 +689,7 @@ class MapLayerPermsBulkTests(APITestCase):
         def make_pool(n):
             datasets = [create_single_dataset(f"tail_{n}_{i}", owner=owner) for i in range(n)]
             for ds in datasets:
-                ds.set_permissions(
-                    {"users": {owner: ["view_resourcebase", "download_resourcebase"]}, "groups": {}}
-                )
+                ds.set_permissions({"users": {owner: ["view_resourcebase", "download_resourcebase"]}, "groups": {}})
             return list(Dataset.objects.filter(pk__in=[d.pk for d in datasets]).order_by("pk"))
 
         small = make_pool(2)
