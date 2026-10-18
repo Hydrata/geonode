@@ -484,6 +484,10 @@ class PermissionLevelMixin:
         if not perms_as_list:
             return perms_as_list
 
+        if _prefetch is not None:
+            # Hydrata TASK-3841: the three checks below cost ~6 queries per resource.
+            return perms_as_list + _prefetch.workflow_perms(self)
+
         if user.can_feature(self):
             perms_as_list.append("feature_resourcebase")
         if user.can_approve(self):

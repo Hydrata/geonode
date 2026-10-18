@@ -602,6 +602,7 @@ class _BulkPermPrefetch:
         self.user = user
         self.config_read_only = Configuration.load().read_only
         self._perm_codename_cache = {}
+        self._workflow_cache = {}
 
         # The caller passes leaf/real instances, so we use them as-is for the
         # real-instance map rather than calling get_real_instance() per object (that
@@ -665,6 +666,58 @@ class _BulkPermPrefetch:
                 )
             )
         return self._perm_codename_cache[key]
+
+    def workflow_perms(self, resource):
+        """
+        The ``feature`` / ``approve`` / ``publish`` codenames ``get_user_perms`` appends,
+        answered as ``user.can_feature/can_approve/can_publish(resource)`` would be
+        (``PermissionsHandlerRegistry.user_can_*``) without their per-resource queries
+        (Hydrata TASK-3841: ~6 per resource, 260 queries for one 5-scenario list):
+
+        - a superuser gets all three (each check returns True for one) -- without
+          computing the group/members set first, so the legacy path's
+          Group.DoesNotExist (AUTO_ASSIGN_REGISTERED_MEMBERS... on, group missing)
+          cannot raise here;
+        - the group managers set and the group-manager check depend only on the
+          resource's owner and group, so they are computed once per (owner, group);
+        - ``change_resourcebase_metadata`` comes from the prefetched checker, which is
+          what ``user.has_perm(perm, obj)`` consults (the model backend ignores objects).
+        """
+        user = self.user
+        if user.is_superuser:
+            return ["feature_resourcebase", "approve_resourcebase", "publish_resourcebase"]
+        from geonode.people.utils import user_is_manager_of_group
+        from geonode.security.utils import AdvancedSecurityWorkflowManager
+
+        key = (resource.owner_id, resource.group_id)
+        if key not in self._workflow_cache:
+            members = AdvancedSecurityWorkflowManager.compute_resource_groups_and_members_set(
+                resource.uuid, instance=resource, group=resource.group
+            )
+            self._workflow_cache[key] = (user_is_manager_of_group(user, resource.group), user in members.managers)
+        is_group_manager, is_manager = self._workflow_cache[key]
+        is_owner = user.pk == resource.owner_id
+        can_change_metadata = user.is_active and self.checker.has_perm(
+            "change_resourcebase_metadata", self.self_resource(resource)
+        )
+
+        if AdvancedSecurityWorkflowManager.is_admin_moderate_mode():
+            can_approve = is_manager and can_change_metadata
+        else:
+            can_approve = is_owner or is_manager or can_change_metadata
+        if AdvancedSecurityWorkflowManager.is_manager_publish_mode():
+            can_publish = is_manager
+        else:
+            can_publish = is_owner or is_manager
+
+        perms = []
+        if is_group_manager:
+            perms.append("feature_resourcebase")
+        if can_approve:
+            perms.append("approve_resourcebase")
+        if can_publish:
+            perms.append("publish_resourcebase")
+        return perms
 
 
 permissions_registry = PermissionsHandlerRegistry()
