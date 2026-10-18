@@ -674,6 +674,48 @@ class MapLayerPermsBulkTests(APITestCase):
         # The latency win comes from the O(N)->O(1) collapse, not from 12-vs-5.
         self.assertLessEqual(n_all, 13, f"expected a small constant query count, got {n_all}")
 
+    # ---- Hydrata TASK-3841: the feature/approve/publish tail is prefetched too ----
+    @override_settings(DEFAULT_ANONYMOUS_VIEW_PERMISSION=False, DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION=False)
+    def test_bulk_query_count_is_constant_for_an_owner_with_perms(self):
+        # The gate above measures a user with NO perms because the per-resource
+        # can_feature/can_approve/can_publish tail used to cost ~6 queries per
+        # resource for anyone holding perms. get_user_perms now answers it from
+        # the prefetch (_BulkPermPrefetch.workflow_perms), so an owner with perms
+        # on every layer -- the common case -- is constant too, with parity.
+        from django.contrib.auth import get_user_model
+
+        owner = get_user_model().objects.create_user("bulk_tail_owner", "to@t.com", "pw")
+
+        def make_pool(n):
+            datasets = [create_single_dataset(f"tail_{n}_{i}", owner=owner) for i in range(n)]
+            for ds in datasets:
+                ds.set_permissions(
+                    {"users": {owner: ["view_resourcebase", "download_resourcebase"]}, "groups": {}}
+                )
+            return list(Dataset.objects.filter(pk__in=[d.pk for d in datasets]).order_by("pk"))
+
+        small = make_pool(2)
+        large = make_pool(6)
+
+        def count_for(datasets):
+            permissions_registry.get_perms_bulk(datasets, user=owner, use_cache=False)
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                permissions_registry.get_perms_bulk(datasets, user=owner, use_cache=False)
+            return len(ctx.captured_queries)
+
+        self.assertEqual(count_for(large), count_for(small), "owner tail must not grow with the number of datasets")
+        for datasets in (small, large):
+            cache.clear()
+            legacy = {
+                ds.pk: set(permissions_registry.get_perms(instance=ds, user=owner, use_cache=False)) for ds in datasets
+            }
+            cache.clear()
+            bulk = permissions_registry.get_perms_bulk(datasets, user=owner, use_cache=False)
+            bulk = {pk: set(v) for pk, v in bulk.items()}
+            self.assertEqual(bulk, legacy)
+            self.assertTrue(all("view_resourcebase" in perms for perms in bulk.values()))
+
     # ---- integration: serializer pre-computes perms in bulk and matches ----
     def test_serializer_uses_bulk_perms(self):
         from rest_framework.test import APIRequestFactory
