@@ -123,6 +123,28 @@ def verify_token(request):
     return HttpResponse(json.dumps({"error": "invalid_request"}), status=403, content_type="application/json")
 
 
+# GeoServer AuthKey role contract (TASK-3446). WebServiceBodyResponseUserGroupService
+# turns each body role into "ROLE_" + trim().upper() and treats the user as admin iff a
+# role is ROLE_ADMINISTRATOR or ROLE_GROUP_ADMIN (GeofenceAccessManager.isAdmin accepts
+# only ROLE_ADMINISTRATOR). A group named ADMIN is also unsafe: its ROLE_ADMIN derives the
+# group GROUP_ADMIN, which the REST role service resolves to ROLE_GROUP_ADMIN if a GeoNode
+# group "group_admin" exists. So only a superuser may carry an admin role.
+_KEYINFO_SUPERUSER_ROLE = "administrator"
+_KEYINFO_RESERVED_ROLES = frozenset({"ADMIN", "ADMINISTRATOR", "GROUP_ADMIN"})
+# "," splits roles and ";" / CR / LF steer GeoServer's ";(.+)$" search regex.
+_KEYINFO_DELIMITERS = (",", ";", "\r", "\n")
+# Java's String.trim() strips every char <= U+0020 (all C0 controls), Python's strip() only
+# whitespace, so strip both before comparing (over-rejecting is safe, under-rejecting is not).
+_JAVA_TRIM_CHARS = "".join(chr(c) for c in range(0x21))
+
+
+def _keyinfo_safe_role(name):
+    """True iff a group name can be emitted in the keyinfo body without becoming admin."""
+    if any(d in name for d in _KEYINFO_DELIMITERS):
+        return False
+    return name.strip(_JAVA_TRIM_CHARS).strip().upper() not in _KEYINFO_RESERVED_ROLES
+
+
 @csrf_exempt
 def key_info(request):
     """GeoServer AuthKey shim (TASK-1324).
@@ -143,7 +165,9 @@ def key_info(request):
     Roles are required: without them an authed
     user authenticates but is denied every group-shared layer (GeoFence sees
     ``role:ANY``). Authentication only — GeoFence still authorises. Returns
-    ``<username>;<roles>`` (200) or empty 401.
+    ``<username>;<roles>`` (200) or empty 401. A superuser additionally gets
+    ``administrator`` (-> ROLE_ADMINISTRATOR, GeoServer admin, bypasses GeoFence);
+    group names that would map to an admin role are dropped (TASK-3446).
     """
     key = request.GET.get("key")
     if key:
@@ -157,9 +181,16 @@ def key_info(request):
             # user-group service upper-cases and prepends "ROLE_" itself, so
             # "registered-members" becomes the GeoFence role
             # "ROLE_REGISTERED-MEMBERS". Do NOT prefix here (double-prefix bug).
-            roles = [group.name for group in user.groups.all()]
+            # Names that could make GeoServer treat a NON-superuser as admin are
+            # never emitted (TASK-3446): see _KEYINFO_RESERVED_ROLES.
+            roles = [group.name for group in user.groups.all() if _keyinfo_safe_role(group.name)]
             if user.is_superuser:
-                roles.append("admin")
+                # TASK-3446: the marker must become ROLE_ADMINISTRATOR, the only
+                # role GeoServer's admin checks accept on this path. The old
+                # "admin" became ROLE_ADMIN, which is admin only inside the REST
+                # role service (adminGroup) — the authkey user-group service
+                # never applies that mapping, so superusers were GeoFence-denied.
+                roles.append(_KEYINFO_SUPERUSER_ROLE)
             body = "{};{}".format(user.get_username(), ",".join(roles))
             return HttpResponse(body, content_type="text/plain")
     return HttpResponse("", status=401, content_type="text/plain")

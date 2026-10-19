@@ -106,9 +106,65 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertEqual(body.split(";", 1)[0], _user.get_username())
+        # A plain user's body is unchanged: raw group names, no admin marker.
+        self.assertEqual(body, "bobby;" + ",".join(g.name for g in _user.groups.all()))
+        self.assertFalse(self._geoserver_admin(body))
         # Invalid and missing keys are rejected.
         self.assertEqual(self.client.get(keyinfo_url, data={"key": "nope"}).status_code, 401)
         self.assertEqual(self.client.get(keyinfo_url).status_code, 401)
+
+    @staticmethod
+    def _geoserver_admin(body):
+        """Replay GeoServer 2.27's WebServiceBodyResponseUserGroupService on a keyinfo body.
+
+        extractRoles: regex ``;(.+)$`` (find), split on ",", each role -> "ROLE_" + trim().upper();
+        the user is GeoServer/GeoFence admin iff a role is ROLE_ADMINISTRATOR or ROLE_GROUP_ADMIN
+        (GeofenceAccessManager.isAdmin + the UGS admin collapse). TASK-3446.
+        """
+        import re
+
+        match = re.search(r";(.+)$", body)
+        java_trim = "".join(chr(c) for c in range(0x21))  # String.trim(): every char <= U+0020
+        roles = {"ROLE_" + r.strip(java_trim).upper() for r in match.group(1).split(",")} if match else set()
+        return bool(roles & {"ROLE_ADMINISTRATOR", "ROLE_GROUP_ADMIN"})
+
+    def test_keyinfo_superuser_is_geoserver_administrator(self):
+        # TASK-3446: on the authkey (?access_token=) path GeoServer derives roles only from
+        # this body. "admin" became ROLE_ADMIN, which GeoServer/GeoFence do NOT treat as admin
+        # (they need ROLE_ADMINISTRATOR), so superusers were GeoFence-denied on layers with no
+        # per-user rule. The superuser marker must map to ROLE_ADMINISTRATOR, and nothing else.
+        keyinfo_url = reverse("keyinfo")
+        User = get_user_model()
+
+        superuser = User.objects.get(username="admin")
+        self.assertTrue(superuser.is_superuser)
+        body = self.client.get(keyinfo_url, data={"key": get_or_create_token(superuser).token}).content.decode()
+        self.assertEqual(body.split(";", 1)[0], "admin")
+        self.assertIn("administrator", body.split(";", 1)[1].split(","))
+        self.assertTrue(self._geoserver_admin(body))
+
+        # Negative controls: a NON-superuser in groups whose names would map to a GeoServer
+        # admin role (or inject one through the body's delimiters) is never made admin.
+        plain = User.objects.create_user(username="keyinfo_3446_plain", password="x")
+        reserved = [
+            "admin",
+            "Administrator ",
+            "\x01administrator",
+            "group_admin",
+            "x,administrator",
+            "y;administrator",
+            "z\nadministrator",
+        ]
+        for name in reserved + ["keyinfo-3446-ok"]:
+            plain.groups.add(Group.objects.get_or_create(name=name)[0])
+        body = self.client.get(keyinfo_url, data={"key": get_or_create_token(plain).token}).content.decode()
+        self.assertFalse(self._geoserver_admin(body), body)
+        username, roles = body.split(";", 1)
+        self.assertEqual(username, "keyinfo_3446_plain")
+        self.assertNotIn("\n", body)
+        self.assertIn("keyinfo-3446-ok", roles.split(","))
+        for name in reserved:
+            self.assertNotIn(name.strip(), roles.split(","))
 
 
 class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
