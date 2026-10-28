@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build all services (Docker Compose v2)
         run: docker compose --env-file .env_test -f docker-compose-test.yml build --progress plain
@@ -52,7 +52,7 @@ jobs:
           docker save -o docker_images/django.tar geonode/geonode:latest-ubuntu-24.04
 
       - name: Upload Docker images as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docker-images
           path: docker_images
@@ -108,10 +108,10 @@ jobs:
               ./tests/test.sh geonode.upload --duration=30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download built Docker images
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: docker-images
           path: docker_images
@@ -230,7 +230,7 @@ jobs:
 
       - name: Upload soak results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: soak-results-${{ matrix.suite.name }}-run${{ github.run_number }}
           path: soak_results/
@@ -238,7 +238,7 @@ jobs:
 
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2
 
       - name: Stop the stack
         if: always()

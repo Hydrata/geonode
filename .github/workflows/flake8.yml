@@ -7,6 +7,9 @@ on:
     # The branches below must be a subset of the branches above
     branches: [ master, 4.*, 5.x ]
 
+permissions:
+  contents: read
+
 jobs:
   validate:
 
@@ -20,10 +23,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@a37ce9120846195fa4ece8f58b268e6043cb2f26 # v3
 
     - name: Set up Python ${{matrix.python-version}}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@e9aba2c848f5ebd159c070c61ea2c4e2b122355e # v2
       with:
         python-version: ${{matrix.python-version}}
 

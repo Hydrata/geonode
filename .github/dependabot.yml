@@ -5,7 +5,7 @@ updates:
   schedule:
     interval: weekly
     time: "00:00"
-  open-pull-requests-limit: 100
+  open-pull-requests-limit: 0   # TASK-4011 (D11b): fork = alerts only, no version-update PRs
   labels:
   - dependencies
   ignore:
