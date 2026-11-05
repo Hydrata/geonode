@@ -28,3 +28,9 @@ class GeoNodeSecurityAppConfig(AppConfig):
         from geonode.security.registry import permissions_registry
 
         permissions_registry.init_registry()
+
+        # Upstream 07fe6a0c3 defines init_gdal_security() but never calls it; call it here so
+        # GDAL does not follow unsafe (cross-protocol / private) HTTP redirects.
+        from geonode.security.utils import init_gdal_security
+
+        init_gdal_security()
