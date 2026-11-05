@@ -1799,6 +1799,10 @@ def get_allowed_extensions():
 
 
 def is_safe_url(url: str) -> bool:
+    # Lets the test environment (.env_test) disable the guard: CI services live on private addresses
+    if not getattr(settings, "SAFE_URL_CHECK_ENABLED", True):
+        return True
+
     def _is_ip_allowed(ip: str) -> bool:
         obj = ipaddress.ip_address(ip.split("%")[0])
         return not (obj.is_loopback or obj.is_private or obj.is_link_local or obj.is_multicast or obj.is_reserved)

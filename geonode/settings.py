@@ -1006,6 +1006,10 @@ except (ValueError, SyntaxError):
         else re.split(r" *[,|:;] *", os.getenv("ALLOWED_HOSTS"))
     )
 
+# SSRF guard (upstream 07fe6a0c3): reject loopback/private/non-http(s) user-supplied URLs.
+# Only .env_test sets this to False (CI services live on private addresses).
+SAFE_URL_CHECK_ENABLED = ast.literal_eval(os.getenv("SAFE_URL_CHECK_ENABLED", "True"))
+
 # AUTH_IP_WHITELIST property limits access to users/groups REST endpoints
 # to only whitelisted IP addresses.
 #

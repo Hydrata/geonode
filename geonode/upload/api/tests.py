@@ -19,6 +19,7 @@
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from geonode.layers.models import Dataset
+from django.test import override_settings
 from django.urls import reverse
 from unittest.mock import MagicMock, patch
 
@@ -138,6 +139,7 @@ class TestImporterViewSet(ImporterBaseTestSupport):
 
         self.assertEqual(201, response.status_code)
 
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
     def test_remote_upload_rejects_unsafe_url(self):
         self.client.force_login(get_user_model().objects.get(username="admin"))
         invalid_urls = [
@@ -158,6 +160,7 @@ class TestImporterViewSet(ImporterBaseTestSupport):
                 response = self.client.post(self.url, data=payload)
                 self.assertEqual(400, response.status_code)
 
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
     @patch("geonode.utils.socket.getaddrinfo")
     def test_remote_upload_rejects_dns_resolving_to_private_ip(self, mock_dns):
         self.client.force_login(get_user_model().objects.get(username="admin"))

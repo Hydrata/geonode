@@ -43,6 +43,7 @@ from geonode.utils import (
     is_safe_url_with_redirects,
 )
 from unittest.mock import MagicMock
+from django.test import SimpleTestCase, override_settings
 
 
 class TestCopyTree(GeoNodeBaseTestSupport):
@@ -320,7 +321,8 @@ class TestMkdtemp(TestCase):
             shutil.rmtree(base, ignore_errors=True)
 
 
-class TestIsSafeURL(TestCase):
+@override_settings(SAFE_URL_CHECK_ENABLED=True)
+class TestIsSafeURL(SimpleTestCase):
 
     def test_allows_http_and_https_urls(self):
         urls = [

@@ -255,6 +255,7 @@ class ProxyTest(TestCase):
         response = self.client.get(f"{self.proxy_url}?url={url}")
         self.assertEqual(response.status_code, 200)
 
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
     def test_rejects_unsafe_schemes(self):
         """Proxy should reject non-http(s) and script-based schemes."""
         urls = [
@@ -270,6 +271,7 @@ class ProxyTest(TestCase):
                 response = self.client.get(f"{self.proxy_url}?url={url}")
                 self.assertEqual(response.status_code, 403)
 
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
     @patch("geonode.utils.socket.getaddrinfo")
     def test_rejects_dns_resolution_to_private_ip(self, mock_dns):
         """Even valid domains should be rejected if they resolve to private IPs."""
