@@ -463,10 +463,13 @@ class Importer3dTilesImportTest(BaseImporterEndToEndTest):
         )
 
 
+# These tests import via the local GeoNode proxy (http://localhost:8000/proxy), which the SSRF guard
+# (sec 2052, upstream 07fe6a0c3) rightly rejects as loopback: bypass the guard for the e2e fixtures only.
+@mock.patch("geonode.upload.handlers.common.serializer.is_safe_url", return_value=True)
 class ImporterWMSImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data", ASYNC_SIGNALS=False)
-    def test_import_wms(self):
+    def test_import_wms(self, _mock_is_safe_url):
         _, wms = WebMapService(
             f"{os.getenv('GEOSERVER_LOCATION')}/ows?service=WMS&version=1.3.0&request=GetCapabilities"
         )
@@ -498,7 +501,7 @@ class ImporterWMSImportTest(BaseImporterEndToEndTest):
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data", ASYNC_SIGNALS=False)
-    def test_import_wms_harvestable_resource_should_be_created(self):
+    def test_import_wms_harvestable_resource_should_be_created(self, _mock_is_safe_url):
         """
         The WMS import should generate the harvestable resource if the remote service URL
         match with an exists harvester, so next time it will be managed by the harvester itself
