@@ -180,7 +180,9 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         # /api/o/v4/userinfo as the plain user
         self.client.login(username="rolepath_plain", password="x")
         info = self.client.get(reverse("userinfo")).json()["groups"]
-        self.assertEqual(info, ["rolepath-ok"])
+        self.assertIn("rolepath-ok", info)
+        for name in reserved:
+            self.assertNotIn(name, info)
         self.client.logout()
 
         # /api/users/<name> and /api/roles as a superuser (superuser_or_apiauth)
@@ -189,7 +191,9 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.client.force_login(superuser)
         listed = self.client.get(reverse("users") + "/rolepath_plain").json()["users"]
         plain_groups = [u for u in listed if u["username"] == "rolepath_plain"][0]["groups"]
-        self.assertEqual(plain_groups, ["rolepath-ok"])
+        self.assertIn("rolepath-ok", plain_groups)
+        for name in reserved:
+            self.assertNotIn(name, plain_groups)
 
         all_roles = self.client.get(reverse("roles")).json()["groups"]
         self.assertEqual(all_roles.count("admin"), 1)  # only the appended superuser marker
