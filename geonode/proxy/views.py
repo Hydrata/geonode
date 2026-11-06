@@ -46,6 +46,7 @@ from geonode.utils import (
     http_client,
     json_response,
     extract_ip_or_domain,
+    is_safe_url,
 )
 from geonode.base.enumerations import LINK_TYPES as _LT
 
@@ -90,8 +91,20 @@ def proxy(
             "The proxy service requires a URL-encoded URL as a parameter.", status=400, content_type="text/plain"
         )
 
+    # An explicit `url` argument is server-built by the caller (e.g. geoserver_proxy -> the internal
+    # GeoServer location, which legitimately resolves to a private address). Only the user-supplied
+    # ?url= parameter must pass the SSRF check.
+    user_supplied_url = not url
     raw_url = url or request.GET["url"]
     raw_url = urljoin(settings.SITEURL, raw_url) if raw_url.startswith("/") else raw_url
+
+    if user_supplied_url and not is_safe_url(raw_url):
+        return HttpResponse(
+            "Invalid URL provided.",
+            status=403,
+            content_type="text/plain",
+        )
+
     url = urlsplit(raw_url)
     scheme = str(url.scheme)
     locator = str(url.path)
