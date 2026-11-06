@@ -197,7 +197,7 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
 
         all_roles = self.client.get(reverse("roles")).json()["groups"]
         self.assertEqual(all_roles.count("admin"), 1)  # only the appended superuser marker
-        for name in reserved:
+        for name in [n for n in reserved if n != "admin"]:
             self.assertNotIn(name, all_roles)
         self.assertIn("rolepath-ok", all_roles)
 
