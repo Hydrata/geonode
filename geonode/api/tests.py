@@ -166,7 +166,6 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         for name in reserved:
             self.assertNotIn(name.strip(), roles.split(","))
 
-
     def test_oauth2_rest_role_path_admin_group_not_geoserver_admin(self):
         # The oauth2 (userinfo) and REST role service (/api/users, /api/roles) paths send group
         # names to GeoServer, whose role service maps adminGroup "admin" -> ROLE_ADMIN. A member
