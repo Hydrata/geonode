@@ -203,8 +203,9 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
 
         # A superuser keeps its admin marker on the userinfo and users paths.
         self.assertIn("admin", self.client.get(reverse("userinfo")).json()["groups"])
-        su_groups = [u for u in self.client.get(reverse("users") + "/admin").json()["users"]
-                     if u["username"] == "admin"][0]["groups"]
+        su_groups = [
+            u for u in self.client.get(reverse("users") + "/admin").json()["users"] if u["username"] == "admin"
+        ][0]["groups"]
         self.assertIn("admin", su_groups)
 
 
