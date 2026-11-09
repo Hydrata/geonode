@@ -166,6 +166,48 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         for name in reserved:
             self.assertNotIn(name.strip(), roles.split(","))
 
+    def test_oauth2_rest_role_path_admin_group_not_geoserver_admin(self):
+        # The oauth2 (userinfo) and REST role service (/api/users, /api/roles) paths send group
+        # names to GeoServer, whose role service maps adminGroup "admin" -> ROLE_ADMIN. A member
+        # of a GeoNode group literally named "admin" (or another admin-mapping/delimiter name)
+        # must not receive it; a superuser still carries the single "admin" marker.
+        User = get_user_model()
+        plain = User.objects.create_user(username="rolepath_plain", password="x")
+        reserved = ["admin", "Admin", "Administrator ", "group_admin", "x,admin", "y;admin", "z\nadmin"]
+        for name in reserved + ["rolepath-ok"]:
+            plain.groups.add(Group.objects.get_or_create(name=name)[0])
+
+        # /api/o/v4/userinfo as the plain user
+        self.client.login(username="rolepath_plain", password="x")
+        info = self.client.get(reverse("userinfo")).json()["groups"]
+        self.assertIn("rolepath-ok", info)
+        for name in reserved:
+            self.assertNotIn(name, info)
+        self.client.logout()
+
+        # /api/users/<name> and /api/roles as a superuser (superuser_or_apiauth)
+        superuser = User.objects.get(username="admin")
+        self.assertTrue(superuser.is_superuser)
+        self.client.force_login(superuser)
+        listed = self.client.get(reverse("users") + "/rolepath_plain").json()["users"]
+        plain_groups = [u for u in listed if u["username"] == "rolepath_plain"][0]["groups"]
+        self.assertIn("rolepath-ok", plain_groups)
+        for name in reserved:
+            self.assertNotIn(name, plain_groups)
+
+        all_roles = self.client.get(reverse("roles")).json()["groups"]
+        self.assertEqual(all_roles.count("admin"), 1)  # only the appended superuser marker
+        for name in [n for n in reserved if n != "admin"]:
+            self.assertNotIn(name, all_roles)
+        self.assertIn("rolepath-ok", all_roles)
+
+        # A superuser keeps its admin marker on the userinfo and users paths.
+        self.assertIn("admin", self.client.get(reverse("userinfo")).json()["groups"])
+        su_groups = [
+            u for u in self.client.get(reverse("users") + "/admin").json()["users"] if u["username"] == "admin"
+        ][0]["groups"]
+        self.assertIn("admin", su_groups)
+
 
 class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
     @classmethod

@@ -19,6 +19,7 @@
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from geonode.layers.models import Dataset
+from django.test import override_settings
 from django.urls import reverse
 from unittest.mock import MagicMock, patch
 
@@ -137,6 +138,44 @@ class TestImporterViewSet(ImporterBaseTestSupport):
         response = self.client.post(self.url, data=payload)
 
         self.assertEqual(201, response.status_code)
+
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
+    def test_remote_upload_rejects_unsafe_url(self):
+        self.client.force_login(get_user_model().objects.get(username="admin"))
+        invalid_urls = [
+            "http://127.0.0.1/tileset.json",
+            "http://10.0.0.1/tileset.json",
+            "http://192.168.1.10/tileset.json",
+        ]
+
+        for invalid_url in invalid_urls:
+            with self.subTest(url=invalid_url):
+                payload = {
+                    "url": invalid_url,
+                    "title": "Remote Title",
+                    "type": "3dtiles",
+                    "action": "upload",
+                }
+
+                response = self.client.post(self.url, data=payload)
+                self.assertEqual(400, response.status_code)
+
+    @override_settings(SAFE_URL_CHECK_ENABLED=True)
+    @patch("geonode.utils.socket.getaddrinfo")
+    def test_remote_upload_rejects_dns_resolving_to_private_ip(self, mock_dns):
+        self.client.force_login(get_user_model().objects.get(username="admin"))
+        mock_dns.return_value = [(None, None, None, None, ("127.0.0.1", 0))]
+
+        payload = {
+            "url": "http://example.com/tileset.json",
+            "title": "Remote Title",
+            "type": "3dtiles",
+            "action": "upload",
+        }
+
+        response = self.client.post(self.url, data=payload)
+
+        self.assertEqual(400, response.status_code)
 
     def test_copy_method_not_allowed(self):
         self.client.force_login(get_user_model().objects.get(username="admin"))

@@ -63,7 +63,7 @@ def user_info(request):
 
     access_token = get_auth_token(user)
 
-    groups = [group.name for group in user.groups.all()]
+    groups = [group.name for group in user.groups.all() if _keyinfo_safe_role(group.name)]
     if user.is_superuser:
         groups.append("admin")
 
@@ -123,6 +123,11 @@ def verify_token(request):
     return HttpResponse(json.dumps({"error": "invalid_request"}), status=403, content_type="application/json")
 
 
+# GeoServer role contract (TASK-3446 keyinfo path; the oauth2 / REST role service paths
+# user_info, roles and users apply the same filter, because GeoServer's REST role service
+# maps adminGroup "admin" -> ROLE_ADMIN: a GeoNode group literally named "admin" would
+# otherwise make its members GeoServer admins. Only a superuser may carry an admin role,
+# and the superuser marker is appended AFTER the filter).
 # GeoServer AuthKey role contract (TASK-3446). WebServiceBodyResponseUserGroupService
 # turns each body role into "ROLE_" + trim().upper() and treats the user as admin iff a
 # role is ROLE_ADMINISTRATOR or ROLE_GROUP_ADMIN (GeofenceAccessManager.isAdmin accepts
@@ -199,7 +204,7 @@ def key_info(request):
 @csrf_exempt
 @superuser_or_apiauth()
 def roles(request):
-    groups = [group.name for group in Group.objects.all()]
+    groups = [group.name for group in Group.objects.all() if _keyinfo_safe_role(group.name)]
     groups.append("admin")
 
     return HttpResponse(json.dumps({"groups": groups}), content_type="application/json")
@@ -222,7 +227,7 @@ def users(request):
 
     json_object = []
     for user in users:
-        groups = [group.name for group in user.groups.all()]
+        groups = [group.name for group in user.groups.all() if _keyinfo_safe_role(group.name)]
         if user.is_superuser:
             groups.append("admin")
 

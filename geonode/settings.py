@@ -1006,6 +1006,10 @@ except (ValueError, SyntaxError):
         else re.split(r" *[,|:;] *", os.getenv("ALLOWED_HOSTS"))
     )
 
+# SSRF guard (upstream 07fe6a0c3): reject loopback/private/non-http(s) user-supplied URLs.
+# Only .env_test sets this to False (CI services live on private addresses).
+SAFE_URL_CHECK_ENABLED = ast.literal_eval(os.getenv("SAFE_URL_CHECK_ENABLED", "True"))
+
 # AUTH_IP_WHITELIST property limits access to users/groups REST endpoints
 # to only whitelisted IP addresses.
 #
@@ -1038,9 +1042,8 @@ if len(ADMIN_IP_WHITELIST) > 0:
     AUTHENTICATION_BACKENDS = ("geonode.security.backends.AdminRestrictedAccessBackend",) + AUTHENTICATION_BACKENDS
     MIDDLEWARE += ("geonode.security.middleware.AdminAllowedMiddleware",)
 
-# LOCKDOWN API endpoints to prevent unauthenticated access.
-# If set to True, search won't deliver results and filtering ResourceBase-objects is not possible for anonymous users
-API_LOCKDOWN = ast.literal_eval(os.getenv("API_LOCKDOWN", "False"))
+# Legacy API endpoints lockdown
+API_LOCKDOWN = ast.literal_eval(os.getenv("API_LOCKDOWN", "True"))
 
 # Require users to authenticate before using Geonode
 LOCKDOWN_GEONODE = ast.literal_eval(os.getenv("LOCKDOWN_GEONODE", "False"))
