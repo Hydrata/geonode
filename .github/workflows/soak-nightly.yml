@@ -1,22 +1,24 @@
 name: Nightly Docker-Suite Soak (flake-rate data)
 
-# TASK-2294 (epic TASK-2290, W0). A SCHEDULED run of the full docker functional
-# suite so the fork accumulates >= 14 days of per-test pass/fail data BEFORE the
-# W2 differential-green baseline is pinned (epic brief R6: pinning from run #1
-# bakes that run's flakes in; pin later from the intersection of N runs).
+# Nightly flake-rate soak of the seven docker suites that epic 3995 (D7) made
+# required checks on 5.x: smoke, main, security, gis_backend, rest_apis, csw and
+# upload (tests.yml). Started as TASK-2294 (epic 2290). Its per-test results
+# show which of those required suites flake, so a red required check on a PR
+# can be told apart from a test that fails on some nights anyway.
 #
 # Differences from tests.yml (the PR gate):
 #   * triggered on `schedule` + `workflow_dispatch` only (never pull_request) — a
 #     soak measures a metric over time, it is NOT a required check.
 #   * every suite runs to COMPLETION (no --failfast) so we capture the full
 #     per-test picture each night, not just up to the first failure.
+#   * the suite step is continue-on-error, so the run's own conclusion stays
+#     green when tests fail: read the per-test results, not the run status.
 #   * per-test results (raw -v3 log + a parsed status TSV + JUnit XML) are
-#     retained as artifacts for 21 days so W2's comparator (TASK-2302) can compute
-#     a per-test flake rate and pin the baseline from the intersection of N runs.
+#     retained as artifacts for 21 days. Nothing reads them automatically; a
+#     person downloads them to judge whether a required suite's failure is a flake.
 #
 # SEQUENCING: a `schedule:` trigger only ever fires from the repository's DEFAULT
-# branch. This file must live on the default branch for the cron to run; the
-# orchestrator lands it there and records `baselines.soak_started_at` on the spine.
+# branch. This file must live on the default branch for the cron to run.
 # It is self-contained (does not reuse run-test-suite.yml) precisely so the whole
 # soak lives in one file on the default branch.
 
@@ -74,14 +76,11 @@ jobs:
               ./tests/test.sh geonode.tests.smoke geonode.tests.test_rest_api geonode.tests.test_search
               geonode.tests.test_utils geonode.tests.test_headers --duration=30
           - name: main
-            # geonode.api excluded (TASK-2302 finding B): it's in
-            # GEONODE_CORE_APPS and passes this filter, but the rest_apis
-            # matrix entry below ALSO explicitly runs geonode.api.tests —
-            # the same test IDs turning up in two suites' TSVs crashes the
-            # differential-green comparator's load_run() (raises on any
-            # overlap). Keep this exclusion in sync with tests.yml's `main`
-            # job and differential_green job, which run the identical
-            # computation.
+            # geonode.api excluded: it is in GEONODE_CORE_APPS and passes this
+            # filter, but the rest_apis matrix entry below already runs
+            # geonode.api.tests, so each test lands in exactly one suite's
+            # results. Keep this exclusion in sync with tests.yml's `main`
+            # job, which runs the identical computation.
             command: >
               TESTS=$(python -c 'import sys; from geonode import settings; print(" ".join([a + ".tests"
               for a in settings.GEONODE_APPS if a != "geonode.api" and "security" not in a and "geoserver" not in a and "upload" not in a]))') &&
