@@ -11,8 +11,10 @@ name: Nightly Docker-Suite Soak (flake-rate data)
 #     soak measures a metric over time, it is NOT a required check.
 #   * every suite runs to COMPLETION (no --failfast) so we capture the full
 #     per-test picture each night, not just up to the first failure.
-#   * the suite step is continue-on-error, so the run's own conclusion stays
-#     green when tests fail: read the per-test results, not the run status.
+#   * the suite step pipes through `tee` (no pipefail) and is continue-on-error,
+#     so the run's own conclusion stays green when tests fail (and the
+#     docker-logs-on-failure step does not fire): read the per-test results,
+#     not the run status.
 #   * per-test results (raw -v3 log + a parsed status TSV + JUnit XML) are
 #     retained as artifacts for 21 days. Nothing reads them automatically; a
 #     person downloads them to judge whether a required suite's failure is a flake.
